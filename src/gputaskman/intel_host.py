@@ -161,6 +161,15 @@ class HostDeviceFeed:
     def apply(self, card, device) -> None:
         host, reason = self.read()
         if host is None:
+            if not reason:
+                protected = ('util_gpu', 'video', 'mem_clock', 'mem_read_bps', 'mem_write_bps',
+                             'pcie_rx_kbs', 'pcie_tx_kbs', 'pcie_gen', 'pcie_width')
+                denied = any(getattr(device, key) is None and
+                             any(word in device.metric_status.get(key, '').lower()
+                                 for word in ('denied', 'permission', 'access required'))
+                             for key in protected)
+                if denied:
+                    reason = 'Protected counters need host permissions; start the optional host reader.'
             if reason:
                 device.metric_status['host_feed'] = reason
             return

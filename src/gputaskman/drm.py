@@ -315,8 +315,10 @@ def _card_name(device: str, vendor_id: int, device_id: int, pci_ids: str | None)
     if "[" in entry and "]" in entry:
         inner = entry[entry.index("[") + 1:entry.rindex("]")]
         if inner:
-            return f"{prefix} {inner}"
-    return f"{prefix} {entry}"
+            entry = inner.strip()
+    already_prefixed = (entry.casefold() == prefix.casefold()
+                        or entry.casefold().startswith(prefix.casefold() + " "))
+    return entry if already_prefixed else f"{prefix} {entry}"
 
 
 def cards(root: str = "/sys/class/drm", pci_ids: str | None = None) -> list[DrmCard]:

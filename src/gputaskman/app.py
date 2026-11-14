@@ -651,6 +651,8 @@ class GpuTaskManager(App):
             lines.append(st)
             if auxiliary_temperature_label(nv):
                 lines.append(Text(auxiliary_temperature_label(nv), style="grey70"))
+            if self.monitoring and nv.metric_status.get('host_feed'):
+                lines.append(Text("GPU counter access: " + nv.metric_status['host_feed'], style="yellow"))
             if nv.metric_status and not self.monitoring:
                 lines.append(Text("Metric availability: " + device_metric_notes(nv), style="grey62"))
             if device_metric_sources(nv) and not self.monitoring:

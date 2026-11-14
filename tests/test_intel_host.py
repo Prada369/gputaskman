@@ -146,6 +146,34 @@ class HostFeedTests(unittest.TestCase):
                                                                util_gpu=1)), taken=self.now)
         self.assertEqual(self.reader.read()[0]['util_gpu'], 1)
 
+    def test_missing_reader_explains_denied_counters_in_monitoring_view_then_recovers(self):
+        from gputaskman.app import GpuTaskManager
+        from gputaskman.collector import Snapshot
+
+        device = DeviceTelemetry(index=0, source='Intel sysfs',
+                                 metric_status={'util_gpu': 'perf access denied'})
+        self.reader.apply(self.card, device)
+        self.assertIn('start the optional host reader', device.metric_status['host_feed'])
+        self.assertIsNone(device.util_gpu)
+        snapshot = Snapshot(taken=1000, adapter=None, adapters=[], nv=device, driver='', cuda='', backend='drm',
+                            vram_total=0, vram_used=None, shared_used=None)
+        app = GpuTaskManager()
+        app.monitoring = True
+        panel = '\n'.join(line.plain for line in app.render_device(snapshot).renderables)
+        self.assertIn('start the optional host reader', panel)
+        self.assertNotIn('Metric availability:', panel)
+        self.publish(util_gpu=0)
+        self.reader.apply(self.card, device)
+        self.assertEqual(device.util_gpu, 0)
+        self.assertNotIn('host_feed', device.metric_status)
+
+    def test_missing_reader_does_not_blame_permissions_for_unsupported_or_measured_counters(self):
+        for device in (DeviceTelemetry(index=0, metric_status={'util_gpu': 'unsupported'}),
+                       DeviceTelemetry(index=0, util_gpu=0, metric_status={'util_gpu': 'perf access denied'})):
+            with self.subTest(device=device):
+                self.reader.apply(self.card, device)
+                self.assertNotIn('host_feed', device.metric_status)
+
     def test_wrong_device_boot_schema_and_future_samples_are_rejected(self):
         changes = [('pci_bus', '0000:05:00.0'), ('vendor_id', 0x1002), ('device_id', 123),
                    ('boot_id', 'another-boot'), ('schema', True), ('schema', 2), ('taken', 1002)]

@@ -371,6 +371,9 @@ say `via host reader`; process attribution and private-client memory rules are u
 metrics actually reported by the card are forwarded. After changing the monitor's source code,
 restart its running UI so it can load this support. Stop the host reader with Ctrl+C; unsupported
 or inaccessible native counters then return to unknown with a host-reader availability reason.
+The normal monitoring view keeps host-reader availability messages visible. If no reader sample
+exists and native counters report permission failures, it explains how the optional reader can
+restore access; unsupported sensors and measured zeros do not trigger that message.
 
 The default reader collects device sensors only. To also record the full standard snapshot,
 including process rows, use `--record` with a bounded duration and redirect stdout into a private
