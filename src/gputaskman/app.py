@@ -727,6 +727,8 @@ class GpuTaskManager(App):
             name = self.chart_label(index, self.snap)
             cell = Text(f"{name:<12} ", style=style)
             precision, value_width = (".2f", 12) if unit == " GB/s" else (".0f", 8)
+            if self.CHARTS[index] == "GPU":
+                precision = ".1f"
             cell.append(f"{format_metric(current, precision, unit):>{value_width}} ", style="bold")
             cell.append(spark(values, max(1, cell_width - 14 - value_width), scale))
             cells.append(cell)

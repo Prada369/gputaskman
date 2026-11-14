@@ -509,7 +509,7 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual((s.nv.source, s.nv.util_gpu), ("Windows WDDM", 42))
         self.assertIsNone(s.nv.temp)
         self.assertIsNone(s.nv.power_w)
-        self.assertIn("GPU 42%", to_text(s))
+        self.assertIn("GPU 42.0%", to_text(s))
         self.assertEqual(to_dict(s)["device"]["util_gpu"], 42)
 
     def test_windows_pnp_driver_version_fills_missing_telemetry_version(self):
@@ -793,7 +793,7 @@ class MemoryTests(unittest.TestCase):
         s = snapshot()
         s.nv = NvDevice(index=0, util_gpu=0, power_w=2.4, pcie_tx_kbs=0, video_clock=656)
         text = to_text(s)
-        self.assertIn("GPU 0%", text)
+        self.assertIn("GPU 0.0%", text)
         self.assertIn("mem-bandwidth N/A", text)
         self.assertIn("2/N/A W", text)
         self.assertIn("P N/A", text)
@@ -1982,7 +1982,7 @@ class UiTests(unittest.IsolatedAsyncioTestCase):
                                "/300 W", "P1", "/3090", "mem 15801", "video 2242"):
                     self.assertNotIn(hidden, slim)
                 for live in ("Test GPU", "VRAM", "10.00 GB / 16.00 GB", "shared(RAM) 1.00 GB",
-                             "GPU 47%", "Mem activity 44%", "PCIe↓", "59°C", "126 W", "SM 2595 MHz",
+                             "GPU 47.0%", "Mem activity 44.0%", "PCIe↓", "59°C", "126 W", "SM 2595 MHz",
                              "throttle: thermal", s.counter_status, "[PAUSED]"):
                     self.assertIn(live, slim)
                 self.assertEqual(app.selected_key, selected)
@@ -2051,7 +2051,7 @@ class UiTests(unittest.IsolatedAsyncioTestCase):
                         lines = "\n".join(line.plain for line in app.render_device(s).renderables)
                         self.assertNotIn("hidden-driver", lines)
                         self.assertIn("N/A / 16.00 GB", lines)
-                        self.assertIn("GPU 0%", lines)
+                        self.assertIn("GPU 0.0%", lines)
                         self.assertIn(s.counter_status, lines)
                         self.assertNotIn("None", lines)
                         if backend != "metal":
@@ -2062,7 +2062,7 @@ class UiTests(unittest.IsolatedAsyncioTestCase):
                 app.apply(s)
                 await pilot.pause()
                 lines = "\n".join(line.plain for line in app.render_device(s).renderables)
-                self.assertIn("AMD gfx 25%", lines)
+                self.assertIn("AMD gfx 25.0%", lines)
                 self.assertIn("gfx 2200 MHz", lines)
                 self.assertIn("115 W ASIC", lines)
                 s.nv = None

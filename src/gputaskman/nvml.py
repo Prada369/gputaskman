@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from decimal import Decimal, ROUND_HALF_UP
+
 from .telemetry import DeviceTelemetry as NvDevice
 
 try:
@@ -11,6 +13,12 @@ except ImportError:  # pragma: no cover
 
 
 def format_metric(value: float | int | None, spec: str = "", unit: str = "") -> str:
+    if value is not None and unit == "%" and spec in ("", ".1f"):
+        # Round the hundredths digit as displayed, including ties such as 74.25 -> 74.3.
+        decimal = Decimal(str(value))
+        if decimal.is_finite():
+            value = decimal.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+            spec = ".1f"
     return f"{format(value, spec)}{unit}" if value is not None else "N/A"
 
 
