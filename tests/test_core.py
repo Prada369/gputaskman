@@ -2480,5 +2480,20 @@ class UiTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(app.paused)
 
 
-if __name__ == "__main__":
-    unittest.main()
+
+class FormatMetricTests(unittest.TestCase):
+    """Percentages keep requested tenths; other default metrics use upstream's integer formatting."""
+
+    def test_intel_style_percentage_uses_tenths_and_half_up_rounding(self):
+        from gputaskman.nvml import format_metric
+
+        self.assertEqual(format_metric(98.06775140236023, unit="%"), "98.1%")
+        self.assertEqual(format_metric(74.25, unit="%"), "74.3%")
+        self.assertEqual(format_metric(2594.6, unit=" MHz"), "2595 MHz")
+
+    def test_explicit_spec_and_n_none_untouched(self):
+        from gputaskman.nvml import format_metric
+
+        self.assertEqual(format_metric(98.06775140236023, ".1f", "%"), "98.1%")  # caller asked for a decimal
+        self.assertEqual(format_metric(3, unit="C"), "3C")  # int stays int
+        self.assertEqual(format_metric(None), "N/A")
