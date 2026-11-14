@@ -130,7 +130,7 @@ skips the consistency check, so do not use it after changing dependencies.
 
 Tagged releases include portable Linux builds: `gputaskman-VERSION-linux-x64.tar.gz` and
 `gputaskman-VERSION-linux-arm64.tar.gz`. They need glibc 2.35 or newer (Ubuntu 22.04, Debian 12,
-or newer) and an NVIDIA driver (or, on native Linux, an AMD GPU on the `amdgpu` driver, an Intel GPU on `i915`,
+or newer) and an NVIDIA driver (or, on native Linux, an AMD GPU on the `amdgpu` driver, an Intel GPU on `i915` or `xe`,
 or a Huawei Ascend 310P with `npu-smi`). NVIDIA works natively, in containers, and in WSL:
 
 ```bash
@@ -283,6 +283,27 @@ Each collector opens device counters only for its selected GPU and owns those ha
 closing one does not reset another collector's readings.
 `xe` cards are detected, but its fdinfo uses other keys (`drm-cycles-*`, `drm-resident-vram0`/`-gtt`), so its
 per-process rows show `n/a` until they are decoded on hardware.
+
+Xe support uses native DRM fdinfo, memory queries and sysfs sensors only. `drm-cycles-*` and
+`drm-total-cycles-*` are GPU clock ticks; load uses their paired deltas, never CPU wall time. All
+clients must have a complete interval before visible-client device load is shown, and that estimate
+is labelled. Local `vramN`, GPU-accessible `gtt`, and CPU-only `system` memory stay separate. Shared
+clients or buffers do not become private process charges.
+
+The Xe device query reports usable local VRAM, overriding the PCI-window estimate when available.
+Device-wide used VRAM is a privileged driver estimate; without effective CAP_PERFMON or CAP_SYS_ADMIN
+it stays unknown and the visible-client fallback is labelled. Query errors, partial data and counter
+resets remain unknown. Sysfs supplies actual/requested GT frequency, throttle reasons, labelled GPU
+and VRAM temperatures, fan RPM, board energy/power cap and media-GT frequency when exposed. PMU,
+PMT traffic, Sysman and a privileged reader are outside this provider. Unsupported fields stay null.
+
+Native-core check on 2026-11-14: Arc Pro B65 (`8086:e222`, `xe`, Linux 7.0.0-43-generic), normal user,
+no workload started. Usable VRAM queried successfully (34,242,297,856 bytes); privileged used VRAM
+was unavailable and not fabricated. Eleven visible GPU processes were scanned, and an actual Xe
+fdinfo cycle pair was readable. Sensor/query and scan success-path costs are listed below. An earlier
+administrator-run 79.7B workload used the broader experimental branch; that is not validation of
+this isolated core under load. **Not validated:** privileged used-query cost, other Xe cards,
+integrated Xe hardware, and namespace/container capability behavior.
 
 Live check, reported by the contributor and not repeated by the maintainer: Linux 6.12, an Arc A770 (discrete, 16 GiB
 BAR) and a UHD 730 (integrated) on `i915`. Both cards were found, named, and selectable with `--gpu`; the Arc showed
@@ -1030,6 +1051,9 @@ Identification is designed to stay cheap. Measured on one Windows machine:
 | vLLM `/metrics` gauges | Whole probe (`/v1/models` + `/metrics` + parse) 1.37 ms median, 1.44 ms max in 30 loopback runs; `/metrics` GET alone 0.48 ms median; parsing a constructed 49 KB, 511-line exposition (all counters, 16 histograms) 0.41 ms median (Fedora Linux 45, i7-10850H, Python 3.13.18; no vLLM runtime/GPU workload) | One extra keyless GET inside the same cached probe, only after `/v1/models` succeeds; same timeout, cap, no redirects. Real vLLM payload size and latency unmeasured |
 | Foundry Local `/models/loaded` | 7.37 ms median, 15.93 ms max in 10 warm reads; first read 9.04 ms (Windows 11 ARM64 build 28000.3231, Snapdragon X2 Elite / Adreno X2-85, driver 32.0.163.2, Foundry Local 0.14.0 with Phi-3.5-mini loaded) | One GET to the daemon's own listener, 0.5 s timeout and 4 MiB response cap; success cached 3 s, misses/401 cached 30 s. No redirects, catalog requests or inference |
 | `psutil.open_files()` | 0.6-2.5 s per process | Never |
+| Xe native memory query | B65, Linux 7.0.0-43-generic, 2026-11-14: 30 successful warm usable-VRAM queries, 0.023 ms median / 0.048 ms max | Selected card per refresh; two bounded read-only ioctls and effective-capability check. Privileged used-query success cost unmeasured |
+| Xe sysfs sensors plus memory query | Same B65, 30 successful warm reads: 0.643 ms median / 0.715 ms max | Selected card per refresh; no PMU, PMT, Sysman or host feed |
+| Xe process scan and fdinfo | Same B65, 11 visible GPU processes: 30 scans, 8.884 ms median / 11.468 ms max. One actual fdinfo read/parse: 0.048 ms median / 0.059 ms max | Read-only process metadata; unavailable client data stays unknown. No workload was started |
 | AMD and Intel on Linux: DRM fdinfo scan (`readlink` every fd, read fdinfo of `/dev/dri` ones) | ~9 ms for ~8,000 fds (AMD, Linux desktop; Intel not measured) | Every refresh, only when an amdgpu or Intel card is shown; listing fds is bounded to 50 ms in the TUI and resumes next refresh, known GPU fds are still read |
 | AMD on WSL: AMD SMI discovery and device telemetry | Radeon 860M, WSL AMD SMI/ROCDXG 1.2.2, Windows driver 32.0.22050.1003: 71.87 ms first discovery; 30 warm device samples, median 6.27 ms, max 9.09 ms, no failures | Startup discovery and per-refresh telemetry; host attribution reuses the current `/dev/dxg` holder scan. Shared sessions keep later discovery/collectors from shutting down live handles; multiple physical adapters unmeasured |
 | Ascend on Linux: `npu-smi` | Contributor reports ~0.5 s per command on an Atlas 300I Duo; not independently measured | Discovery is cached for 120 s. Each selected chip runs one `info` and one `proc-mem` command every 10 s and owns a watch process; multiple selected chips add their synchronous command costs |

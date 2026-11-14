@@ -76,6 +76,14 @@ its total is a PCI window size, so both carry `report.INTEL_MEMORY_NOTE`, and a 
 output (`--once`, `--json`) uses `scan_budget=None` to
 identify everything immediately; the TUI spreads scans across refreshes.
 
+Xe's native provider (`xe.py`) only performs bounded read-only memory ioctls against a PCI-matched
+render node. Usable VRAM is driver-reported; used VRAM needs effective CAP_PERFMON/SYS_ADMIN and
+must remain unknown without them. `drm.py` decodes GPU busy/total cycle pairs, not nanoseconds;
+visible-client load requires complete samples and retains its estimate label. Keep VRAM, GTT and
+CPU-only regions separate and retain all private-sharing gates. This core excludes Xe PMU, PMT,
+Sysman and privileged readers. Pin `gputaskman.app.BACKEND` in native UI fixtures so they do not use
+Metal on macOS. README records native B65 success-path costs and remaining hardware gaps.
+
 ## Where to change things
 
 | Change | Start in | Notes |
