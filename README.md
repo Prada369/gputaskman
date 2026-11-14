@@ -959,6 +959,15 @@ with no readings is left out. The top processes are ranked by peak VRAM, using o
 separate), with their peak GPU load. A process that never had measured bytes shows `n/a`. Lines that
 do not parse, such as a last line cut short, are skipped and counted.
 
+When recorded, summaries also include VRAM temperature, memory read/write traffic, combined traffic
+and the ratio to the reported maximum bandwidth. Traffic uses decimal GB/s in text and bytes/s in
+JSON, separate from allocated VRAM. Combined traffic requires both counters in the same sample;
+its peak is never calculated by adding read and write peaks from different intervals. The JSON
+traffic metrics retain recorded provider labels in `sources` (`not recorded` for missing labels).
+These optional fields are omitted when no valid reading exists. Replaying the contributor's
+66-sample B65 79.7B capture reproduced the saved 42.97 GB/s combined peak without collecting
+new counters or starting a workload.
+
 Because `record` appends, one file can hold several recordings, and `summary` reports each run on its own.
 A new run starts when the GPU or backend changes, when `taken` goes backwards (a clock change), or when
 two samples are further apart than ten times the file's median interval or 60 seconds, whichever is longer.

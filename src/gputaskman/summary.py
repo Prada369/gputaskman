@@ -28,7 +28,12 @@ METRICS = (
     ("shared_used", "shared memory used", "bytes", lambda s: s.get("shared_used")),
     ("gpu_load", "GPU load", "pct", lambda s: _dev(s, "util_gpu")),
     ("temperature", "temperature", "temp", lambda s: _dev(s, "temp")),
+    ("vram_temperature", "VRAM temperature", "temp", lambda s: _dev(s, "vram_temp")),
     ("power", "power", "watts", lambda s: _dev(s, "power_w")),
+    ("mem_read_bps", "memory reads", "bytes/s", lambda s: _dev(s, "mem_read_bps")),
+    ("mem_write_bps", "memory writes", "bytes/s", lambda s: _dev(s, "mem_write_bps")),
+    ("mem_bandwidth_bps", "memory read+write", "bytes/s", lambda s: _memory_traffic(s)),
+    ("mem_bandwidth_pct", "memory BW / max", "pct", lambda s: _dev(s, "mem_bandwidth_pct")),
     ("system_ram_used", "system RAM used", "bytes", lambda s: _sys(s, "ram", "used")),
     ("system_cpu", "system CPU", "pct", lambda s: _sys(s, "cpu", "pct")),
 )
@@ -47,6 +52,24 @@ def _sys(s: dict, section: str, key: str):
     d = s.get("system")
     d = d.get(section) if isinstance(d, dict) else None
     return d.get(key) if isinstance(d, dict) else None
+
+
+def _memory_traffic(s: dict):
+    read, write = (_number(_dev(s, key)) for key in ("mem_read_bps", "mem_write_bps"))
+    return read + write if read is not None and write is not None else None
+
+
+def _traffic_sources(run: list[dict], fields: tuple[str, ...]) -> list[str]:
+    sources = set()
+    for s in run:
+        if not all(_number(_dev(s, key)) is not None for key in fields):
+            continue
+        labels = _dev(s, "metric_sources")
+        labels = labels if isinstance(labels, dict) else {}
+        for key in fields:
+            source = labels.get(key)
+            sources.add(source if isinstance(source, str) and source else "not recorded")
+    return sorted(sources)
 
 
 def load(path: str) -> tuple[list[dict], int]:
@@ -137,6 +160,10 @@ def summarize_run(run: list[dict]) -> dict:
         metrics["temperature"]["source"] = k
     if "power" in metrics and (k := _kind(run, "power_kind")):
         metrics["power"]["source"] = k
+    for key, fields in (("mem_read_bps", ("mem_read_bps",)), ("mem_write_bps", ("mem_write_bps",)),
+                        ("mem_bandwidth_bps", ("mem_read_bps", "mem_write_bps"))):
+        if key in metrics:
+            metrics[key]["sources"] = _traffic_sources(run, fields)
     total = next((t for t in (_number(s.get("vram_total")) for s in run) if t), None)
     return {"gpu": run[0].get("gpu"), "backend": run[0].get("backend"),
             "start": run[0]["taken"], "end": run[-1]["taken"], "seconds": round(run[-1]["taken"] - run[0]["taken"], 1),
@@ -162,6 +189,8 @@ def _fmt(v, kind: str) -> str:
         return f"{v:.1f}%"
     if kind == "temp":
         return f"{v:.0f} C"
+    if kind == "bytes/s":
+        return f"{v / 1e9:.2f} GB/s"
     return f"{v:.0f} W"
 
 

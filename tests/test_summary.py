@@ -43,6 +43,27 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual((m["system_cpu"]["peak"], m["system_cpu"]["readings"]), (10.0, 1))
         self.assertEqual(m["system_ram_used"]["avg"], 8 * GiB)
 
+    def test_memory_traffic_combines_paired_samples_and_preserves_missing_and_zero_readings(self):
+        samples = [snap(0, device={"mem_read_bps": 8e9, "mem_write_bps": 1e9, "vram_temp": 80,
+                                   "metric_sources": {"mem_read_bps": "PMT", "mem_write_bps": "PMT"}}),
+                   snap(1, device={"mem_read_bps": 1e9, "mem_write_bps": 7e9}),
+                   snap(2, device={"mem_read_bps": None, "mem_write_bps": 0, "vram_temp": 0}),
+                   snap(3, device={"mem_read_bps": 0, "mem_write_bps": 0}),
+                   snap(4, device={"mem_read_bps": float('inf'), "mem_write_bps": True})]
+        result = summarize(samples)
+        m = result["runs"][0]["metrics"]
+        self.assertEqual(m["mem_bandwidth_bps"]["peak"], 9e9)  # never add peaks from different intervals
+        self.assertEqual(m["mem_bandwidth_bps"]["avg"], 17e9 / 3)
+        self.assertEqual(m["mem_bandwidth_bps"]["readings"], 3)
+        self.assertEqual(m["mem_read_bps"]["readings"], 3)
+        self.assertEqual(m["mem_write_bps"]["readings"], 4)
+        self.assertEqual(m["mem_bandwidth_bps"]["unit"], "bytes/s")
+        self.assertEqual(m["mem_bandwidth_bps"]["sources"], ["PMT", "not recorded"])
+        self.assertEqual(m["vram_temperature"]["avg"], 40)
+        self.assertEqual(m["vram_temperature"]["readings"], 2)
+        self.assertIn("9.00 GB/s", to_text(result))
+        self.assertNotIn("mem_read_bps", summarize([snap(0)])["runs"][0]["metrics"])
+
     def test_processes_sum_same_name_per_sample_and_count_measured_bytes_only(self):
         samples = [snap(0, [proc("llama", GiB, 40), proc("llama", GiB, 30), proc("wsl", None, 5)]),
                    snap(1, [proc("llama", GiB, 90), proc("wsl", None, None), proc("llama", None, None, host="windows")])]

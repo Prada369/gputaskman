@@ -131,6 +131,10 @@ do not replace the driver's aggregate VRAM temperature with a derived channel ma
 
 ## Verify
 
+Record summaries keep memory traffic separate from allocations. Combined read/write bandwidth
+uses paired valid counters within each snapshot, never the sum of independent peaks. Traffic
+source labels survive in summary JSON, and unknown rates stay excluded rather than becoming zero.
+
 ```powershell
 uv sync --locked
 uv run --locked python -m unittest discover -s tests -q
