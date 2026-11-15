@@ -160,6 +160,35 @@ class DiffTests(unittest.TestCase):
         self.assertNotIn("dwm.exe", text)
         self.assertIn("1 process(es) changed by less than 16 MB", text)
 
+    def test_compressed_graphics_is_its_own_measured_change(self):
+        before_row = proc(1, "python", vram=GiB)
+        after_row = proc(1, "python", vram=GiB)
+        before_row["graphics_swapped_bytes"] = 0
+        after_row["graphics_swapped_bytes"] = 512 * MiB
+        d = diff(snap([before_row], GiB, GiB, backend="metal", gpu="Apple M2 Ultra"),
+                 snap([after_row], GiB, GiB, backend="metal", gpu="Apple M2 Ultra"))
+        moved = d["processes"][0]["measured"]["graphics_swapped_bytes"]
+        self.assertEqual(moved, {"before": 0, "after": 512 * MiB, "delta": 512 * MiB})
+        self.assertEqual(d["processes"][0]["measured"]["vram_bytes"]["delta"], 0)
+        text = to_text(d)
+        self.assertIn("compressed graphics (footprint swapped)  0 MB -> 512 MB  +512 MB", text)
+        appeared = proc(3, "python", vram=GiB)
+        appeared["graphics_swapped_bytes"] = 0
+        born = diff(snap([], GiB, GiB, backend="metal", gpu="Apple M2 Ultra"),
+                    snap([appeared], GiB, GiB, backend="metal", gpu="Apple M2 Ultra"))
+        self.assertNotIn("compressed graphics", to_text(born))
+        appeared["graphics_swapped_bytes"] = 512 * MiB
+        born = diff(snap([], GiB, GiB, backend="metal", gpu="Apple M2 Ultra"),
+                    snap([appeared], GiB, GiB, backend="metal", gpu="Apple M2 Ultra"))
+        self.assertIn("compressed graphics (footprint swapped)  N/A -> 512 MB", to_text(born))
+        quiet = proc(2, "idle", vram=GiB)
+        quiet["graphics_swapped_bytes"] = MiB
+        same = proc(2, "idle", vram=GiB)
+        same["graphics_swapped_bytes"] = 0
+        small = diff(snap([same], GiB, GiB, backend="metal", gpu="Apple M2 Ultra"),
+                     snap([quiet], GiB, GiB, backend="metal", gpu="Apple M2 Ultra"))
+        self.assertIn("(no process changed by 16 MB or more)", to_text(small))
+
     def test_runtime_reported_segments_and_unknown_measurements(self):
         before = snap([proc(1, "llama", vram=None, llm=llm(4096, GiB, exact=True))], used=None, attributed=None)
         after = snap([proc(1, "llama", vram=None, llm=llm(8192, 2 * GiB, exact=True))], used=None, attributed=None)

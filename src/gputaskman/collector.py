@@ -159,8 +159,9 @@ class Snapshot:
 
 
 def _is_live(g: ProcGpu) -> bool:
+    # graphics_swapped is macOS compressed graphics memory and is not added to dedicated.
     return (not g.attributed or g.dedicated >= MiB or g.gpu_pct >= 0.5 or g.shared >= 16 * MiB
-            or g.paged_out >= 16 * MiB)
+            or g.paged_out >= 16 * MiB or (g.graphics_swapped or 0) >= 16 * MiB)
 
 
 def select_adapter(adapters: list[Adapter], gpu_index: int) -> Adapter | None:
