@@ -561,6 +561,13 @@ class MemoryTests(unittest.TestCase):
         self.assertIn("VRAM 0 MB / 128 MB", text)
         self.assertIn("SHARED", text)
         self.assertIn("shared (in system RAM) 776 MB", text)
+        self.assertIn("GPU 42%  (Windows does not report temperature, power, clocks or PCIe", text)
+        self.assertNotIn("SM N/A", text)
+        output = io.StringIO()
+        Console(file=output, width=160).print(GpuTaskManager().render_device(s))
+        self.assertIn("GPU 42%", output.getvalue())
+        self.assertIn("Windows does not report temperature", output.getvalue())
+        self.assertNotIn("N/A", output.getvalue())
 
     def test_qualcomm_wddm_reports_shared_memory_and_engine_activity(self):
         memory = 45 * GiB

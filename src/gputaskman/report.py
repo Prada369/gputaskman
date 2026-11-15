@@ -95,6 +95,7 @@ METAL_NOTE = ("macOS: unified memory, so GPU memory is part of system RAM. Rows 
               "memory needs root.")
 INTEL_MEMORY_NOTE = ("Intel: used is a sum over inspectable processes (no device counter); "
                      "total is the PCI window size, an estimate. Free is not shown.")
+WDDM_DEVICE_NOTE = "Windows does not report temperature, power, clocks or PCIe for this GPU."
 
 
 def intel_memory_note(s: Snapshot) -> str:
@@ -197,7 +198,9 @@ def to_text(s: Snapshot, limit: int = 30) -> str:
         out.append(intel_memory_note(s))
     if s.counter_status:
         out.append(s.counter_status)
-    if nv and s.backend != "metal":
+    if nv and nv.source == "Windows WDDM":
+        out.append(f"GPU {format_metric(nv.util_gpu, unit='%')}  ({WDDM_DEVICE_NOTE})")
+    elif nv and s.backend != "metal":
         rx = nv.pcie_rx_kbs / 1024 if nv.pcie_rx_kbs is not None else None
         tx = nv.pcie_tx_kbs / 1024 if nv.pcie_tx_kbs is not None else None
         pstate = f"P{nv.pstate}" if nv.pstate is not None else "P N/A"

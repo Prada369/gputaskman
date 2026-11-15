@@ -22,7 +22,7 @@ from .host import HostSample, HostSampler
 from .llm import gb, redact_cmdline, server_gauge_text
 from .nvml import NvDevice, format_metric
 from .recovery import LiveCollectors
-from .report import (DRM_RESIDENT_NOTE, METAL_NOTE, WSL_EMPTY, drm_note, has_engine_counters, has_shared_counters, has_wddm_counters,
+from .report import (DRM_RESIDENT_NOTE, METAL_NOTE, WDDM_DEVICE_NOTE, WSL_EMPTY, drm_note, has_engine_counters, has_shared_counters, has_wddm_counters,
                      inferred_note, intel_memory_note, vram_label, vram_total_label, wsl_note)
 
 KIND_STYLE = {
@@ -573,6 +573,10 @@ class GpuTaskManager(App):
         if nv and s.backend == "metal":
             lines.append(Text(f"GPU {format_metric(nv.util_gpu, unit='%')}",
                               style=f"bold {self.CHART_COLORS['GPU']}"))
+        elif nv and nv.source == "Windows WDDM":
+            lines.append(Text(f"GPU {format_metric(nv.util_gpu, unit='%')}",
+                              style=f"bold {self.CHART_COLORS['GPU']}"))
+            lines.append(Text(WDDM_DEVICE_NOTE, style="grey70"))
         elif nv:
             rx = nv.pcie_rx_kbs / 1024 if nv.pcie_rx_kbs is not None else None
             tx = nv.pcie_tx_kbs / 1024 if nv.pcie_tx_kbs is not None else None
