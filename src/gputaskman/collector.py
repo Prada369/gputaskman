@@ -160,8 +160,10 @@ class Snapshot:
 
 def _is_live(g: ProcGpu) -> bool:
     # graphics_swapped is macOS compressed graphics memory and is not added to dedicated.
-    return (not g.attributed or g.dedicated >= MiB or g.gpu_pct >= 0.5 or g.shared >= 16 * MiB
-            or g.paged_out >= 16 * MiB or (g.graphics_swapped or 0) >= 16 * MiB)
+    return (
+        bool(g.engine_reason) or not g.attributed or g.dedicated >= MiB or g.gpu_pct >= 0.5
+        or g.shared >= 16 * MiB or g.paged_out >= 16 * MiB or (g.graphics_swapped or 0) >= 16 * MiB
+    )
 
 
 def select_adapter(adapters: list[Adapter], gpu_index: int) -> Adapter | None:
@@ -457,6 +459,12 @@ class Collector:
                                       ProcDetail(pid, "(outside this container)"), host=True, origin="outside"))
         if self.host is not None:  # current inferred sizes drive both scan priority and the LLM breakdown
             self._add_host_rows(snap)
+        if any(row.gpu.engine_reason for row in snap.procs):
+            snap.counter_status = " ".join(filter(None, (
+                snap.counter_status,
+                "Windows GPU engine utilization counters outside 0-1000% are unavailable for affected processes "
+                "and device load derived from those counters.",
+            )))
         if (snap.backend == "wsl" and snap.host_data and snap.vram_total
                 and sum(r.gpu.dedicated for r in snap.procs) > snap.vram_total):
             snap.counter_status = " ".join(filter(None, (

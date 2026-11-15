@@ -26,7 +26,8 @@ from gputaskman.amdsmi import AmdSmi, _read_vram_bytes
 from gputaskman.adl import Adl, _Metrics
 from gputaskman.app import GpuTaskManager, spark, stacked_bar
 from gputaskman.cli import main
-from gputaskman.collector import Collector, ProcRow, Snapshot, _llm_wanted, select_adapter, select_nv_device
+from gputaskman.collector import (Collector, ProcRow, Snapshot, _is_live, _llm_wanted, select_adapter,
+                                select_nv_device)
 from gputaskman.dxgi import Adapter
 from gputaskman.gguf import GgufInfo, read_gguf
 from gputaskman.handy import HandyEvidence, inspect_handy, _log_cache, _settings_cache
@@ -712,6 +713,36 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(gpu.gpu_pct, 10)
         self.assertFalse(gpu.paged_available)
 
+    def test_invalid_engine_counter_makes_process_unknown_but_keeps_ordinary_overshoot(self):
+        counters = GpuCounters.__new__(GpuCounters)
+        counters._query = None
+        data = {"engine": [
+            ("pid_42_luid_0x0_0x1_phys_0_eng_0_engtype_3D", 18_465_941_443_552.6),
+            ("pid_42_luid_0x0_0x1_phys_0_eng_1_engtype_Compute", 50.0),
+            ("pid_43_luid_0x0_0x1_phys_0_eng_0_engtype_3D", 312.0),
+            ("pid_44_luid_0x0_0x2_phys_0_eng_2_engtype_Compute", 150.0),
+            ("pid_45_luid_0x0_0x3_phys_0_eng_3_engtype_3D", float("nan")),
+            ("pid_46_luid_0x0_0x3_phys_0_eng_4_engtype_3D", -1.0),
+            ("pid_47_luid_0x0_0x3_phys_0_eng_5_engtype_3D", 1000.1),
+            ("pid_48_luid_0x0_0x3_phys_0_eng_6_engtype_3D", 1000.0),
+        ]}
+        with patch.object(counters, "_read", side_effect=lambda key: data.get(key, [])), \
+                patch("gputaskman.pdh._pdh", SimpleNamespace(PdhCollectQueryData=lambda query: 0)):
+            processes, adapters = counters.sample()
+        invalid = processes[1][42]
+        self.assertEqual(invalid.engines, {})
+        self.assertNotIn("engine", invalid.available)
+        self.assertIn("outside the supported 0-1000% range", invalid.engine_reason)
+        self.assertTrue(_is_live(invalid))
+        for pid in (45, 46, 47):
+            self.assertNotIn("engine", processes[3][pid].available)
+        self.assertEqual(processes[3][48].gpu_pct, 1000.0)
+        self.assertEqual(processes[1][43].engines["3d"], 312.0)
+        self.assertEqual(processes[1][43].gpu_pct, 312.0)
+        self.assertIsNone(adapters[1].util_gpu)
+        self.assertEqual(adapters[2].util_gpu, 100.0)
+        self.assertIsNone(adapters[3].util_gpu)
+
     def test_wddm_adapter_utilization_uses_busiest_combined_engine(self):
         counters = GpuCounters.__new__(GpuCounters)
         counters._query = None
@@ -729,10 +760,12 @@ class MemoryTests(unittest.TestCase):
     def test_missing_process_counters_are_not_reported_as_zero(self):
         s = snapshot()
         s.procs[0].gpu.available = {"dedicated"}
+        s.procs[0].gpu.engine_reason = "Windows per-process GPU engine counter unavailable."
         row = to_dict(s)["processes"][0]
         self.assertEqual(row["vram_bytes"], 8 * GiB)
         for name in ("shared_bytes", "committed_bytes", "paged_out_bytes", "gpu_pct", "engines"):
             self.assertIsNone(row[name])
+        self.assertEqual(row["engine_unavailable_reason"], s.procs[0].gpu.engine_reason)
         self.assertIn("N/A", to_text(s))
         s.procs[0].gpu.available.clear()
         self.assertIsNone(to_dict(s)["attributed"])

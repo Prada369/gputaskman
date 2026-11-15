@@ -53,6 +53,18 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(s.adapters[RTX].dedicated, 3.0 * GiB)
         self.assertEqual(s.names[24820], "vmwp")
 
+    def test_extreme_engine_counter_is_unknown_without_rejecting_normal_overshoot(self):
+        sample = parse_line(line([
+            ["utilization percentage", f"pid_42_{LUID}_eng_0_engtype_3D", 18_465_941_443_552.6],
+            ["utilization percentage", f"pid_42_{LUID}_eng_1_engtype_Compute", 50.0],
+            ["utilization percentage", f"pid_43_{LUID}_eng_0_engtype_3D", 312.0],
+        ], {}))
+        invalid = sample.procs[RTX][42]
+        self.assertEqual(invalid.engines, {})
+        self.assertNotIn("engine", invalid.available)
+        self.assertIn("outside the supported 0-1000% range", invalid.engine_reason)
+        self.assertEqual(sample.procs[RTX][43].engines["3d"], 312.0)
+
     def test_bad_lines_are_ignored(self):
         self.assertIsNone(parse_line("WARNING: something"))
         self.assertIsNone(parse_line("[1, 2]"))
