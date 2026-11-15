@@ -479,22 +479,37 @@ _INTEL_THROTTLE = (
 )
 
 
-def _intel_throttle(gt: str) -> list[str] | None:
+def _intel_throttle(gt: str, *, xe: bool = False) -> list[str] | None:
     """Names of the limits currently throttling an Intel GPU; empty when none is active.
 
     _int already turns an unreadable or unparseable node into None, so those are skipped. None when no
     node was readable at all: unknown, not "no throttling" (an empty list means readable and idle).
+    Xe prefers its aggregate snapshot; the older per-flag fallback cannot establish idle when reads fail.
     """
-    seen = False
+    if xe:
+        # Newer Xe kernels expose a single snapshot, avoiding races between reason files.
+        reasons = _read(os.path.join(gt, "throttle", "reasons"))
+        if reasons:
+            words = reasons.split()
+            if words == ["none"]:
+                return []
+            if "none" in words:
+                return None
+            labels = {node.removeprefix("throttle_reason_"): label for node, label in _INTEL_THROTTLE}
+            return [labels.get(word, word) for word in words]
+    seen, missing = False, False
     active = []
     for node, label in _INTEL_THROTTLE:
+        if xe:
+            node = os.path.join("throttle", node.replace("throttle_reason_", "reason_"))
         value = _int(os.path.join(gt, node))
         if value is None:
+            missing = True
             continue
         seen = True
         if value:
             active.append(label)
-    return active if seen else None
+    return active if seen and (not xe or active or not missing) else None
 
 
 def read_device(card: DrmCard, index: int) -> DeviceTelemetry:
@@ -539,19 +554,21 @@ def read_device(card: DrmCard, index: int) -> DeviceTelemetry:
         dev.gfx_clock = _hwmon_clock(hwmon, "sclk")
         dev.mem_clock = _hwmon_clock(hwmon, "mclk")
     if card.intel:
-        # The gt nodes hang off the DRM card itself (/sys/class/drm/cardN/gt/gt0), not the PCI device.
-        gt = os.path.join(os.path.dirname(d), "gt", "gt0")
-        act = _int(os.path.join(gt, "rps_act_freq_mhz"))
-        cur = _int(os.path.join(gt, "rps_cur_freq_mhz"))
-        # rps_act_freq_mhz is the actual frequency; rps_cur_freq_mhz is what the driver last requested
-        # (per the kernel's intel_gt_sysfs_pm.c). The actual one can read 0 while the GPU idles in RC6,
+        # i915 uses the DRM card's GT; Xe uses the primary tile/GT below the PCI device.
+        xe = card.driver == "xe"
+        gt = (os.path.join(d, "tile0", "gt0", "freq0") if xe else
+              os.path.join(os.path.dirname(d), "gt", "gt0"))
+        act = _int(os.path.join(gt, "act_freq" if xe else "rps_act_freq_mhz"))
+        cur = _int(os.path.join(gt, "cur_freq" if xe else "rps_cur_freq_mhz"))
+        # act_freq / rps_act_freq_mhz is actual; cur_freq / rps_cur_freq_mhz is the driver's request.
+        # The actual one can read 0 while the GPU idles in RC6,
         # which is a real reading, not a missing one; fall back to the requested one on kernels without it.
         dev.sm_clock = act if act is not None else cur
         if cur is not None:
             # hwmon has no sclk on Intel; keep the requested frequency too, for the JSON.
             dev.gfx_clock = cur
-        dev.sm_clock_max = _int(os.path.join(gt, "rps_RP0_freq_mhz"))
-        dev.throttle = _intel_throttle(gt)
+        dev.sm_clock_max = _int(os.path.join(gt, "rp0_freq" if xe else "rps_RP0_freq_mhz"))
+        dev.throttle = _intel_throttle(gt, xe=xe)
         util, video = _intel_pmu_rates(card)
         dev.util_gpu = util
         dev.video = video
