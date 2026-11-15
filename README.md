@@ -831,7 +831,10 @@ uv run --locked gputaskman summary session.jsonl          # add --json for machi
 It prints the GPU, the number of samples and the time span, then the average and peak of VRAM used,
 shared memory, GPU load, temperature and power (from the `device` section), plus system RAM and CPU
 when the file has a `system` section. Values are shown exactly as recorded, never capped: Windows can
-report a process's engine above 100% for one interval when work spills into the next. A `null` is
+report a process's engine above 100% for one interval when work spills into the next. A non-finite,
+negative, or above-1000% Windows process-engine counter is instead unavailable (`gpu_pct` and
+`engines` are `null`, with `engine_unavailable_reason`); device load derived from those counters is
+also unavailable for that adapter. A `null` is
 skipped, not counted as 0, and the `READINGS` column says how many samples had a value; a metric
 with no readings is left out. The top processes are ranked by peak VRAM, using only the measured
 `vram_bytes` (rows with the same name are added together within each sample; WSL host rows stay

@@ -131,6 +131,7 @@ def to_dict(s: Snapshot) -> dict:
             "paged_out_bytes": int(p.gpu.paged_out) if wddm and p.gpu.paged_available else None,
             "gpu_pct": round(p.gpu.gpu_pct, 1) if engines else None,
             "engines": {k: round(v, 1) for k, v in p.gpu.engines.items() if v} if engines else None,
+            "engine_unavailable_reason": p.gpu.engine_reason or None,
             "ports": p.detail.ports, "inside": p.inside,
             "model_files": [dataclasses.asdict(m) for m in p.detail.models],
             "installed_models": [dataclasses.asdict(m) for m in p.detail.candidates],
