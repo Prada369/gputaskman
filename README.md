@@ -502,6 +502,16 @@ Live check on an M4 Mac mini (macOS 26.3.1): a PyTorch MPS job with a 2 GiB buff
 showed `Python  AI  PyTorch+Metal  3.06 GB  99%`, with device utilization at 99% and allocated GPU
 memory rising by the same amount.
 
+**Apple Foundation Models (Apple Intelligence's on-device model) does not show up, because it is not GPU
+work.** An app that calls `FoundationModels` hands the request to `TGOnDeviceInferenceProviderService`, run
+by the `_modelmanagerd` user. That process opens Neural Engine clients (`H1xANELoadBalancerDirectPathClient`)
+and no Metal clients, so it has no GPU time or graphics memory to show. macOS exposes no per-process or
+device-wide Neural Engine utilization without root (`powermetrics`), so gputaskman does not guess one.
+Live check on an M5 Pro (macOS 27.2.1, 24 GB): a Swift loop of `LanguageModelSession.respond` calls,
+each about 2,000 characters in 10-20 s, alternated three times with idle windows of 10 s. Device
+utilization was 0% in all three AFM windows, the per-process Metal GPU time totaled 9-10% in AFM windows
+and 6-12% in idle ones, and neither the calling process nor the AFM worker gained a Metal client.
+
 Scans skip other apps' sandbox containers (`~/Library/Containers`, `~/Library/Group Containers`) and
 system files without opening them: opening a file in a protected container blocks while macOS waits
 for a privacy consent prompt.
