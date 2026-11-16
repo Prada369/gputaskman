@@ -201,7 +201,7 @@ def parse_fdinfo(text: str) -> dict | None:
         # i915's regions: local0 is device memory and system0 is system memory the GPU's buffers currently
         # sit in (the GTT slot); stolen-local0 and stolen-system0 are the firmware-reserved parts of each.
         # system0 includes buffers placed there on purpose, not only memory that spilled from local0.
-        # There is no separate CPU-only region.
+        # i915 has no separate CPU-only region; Xe's distinct names are handled above.
         has_local = any("local0" in key for key in fields)
         if not has_local:
             # An integrated GPU has no local0 region at all, so there is no shared-local0 to require:
@@ -512,24 +512,37 @@ _INTEL_THROTTLE = (
 )
 
 
-def _intel_throttle(gt: str, xe: bool = False) -> list[str] | None:
+def _intel_throttle(gt: str, *, xe: bool = False) -> list[str] | None:
     """Names of the limits currently throttling an Intel GPU; empty when none is active.
 
     _int already turns an unreadable or unparseable node into None, so those are skipped. None when no
     node was readable at all: unknown, not "no throttling" (an empty list means readable and idle).
+    Xe prefers its aggregate snapshot; the older per-flag fallback cannot establish idle when reads fail.
     """
-    seen = False
+    if xe:
+        # Newer Xe kernels expose a single snapshot, avoiding races between reason files.
+        reasons = _read(os.path.join(gt, "throttle", "reasons"))
+        if reasons:
+            words = reasons.split()
+            if words == ["none"]:
+                return []
+            if "none" in words:
+                return None
+            labels = {node.removeprefix("throttle_reason_"): label for node, label in _INTEL_THROTTLE}
+            return [labels.get(word, word) for word in words]
+    seen, missing = False, False
     active = []
     for node, label in _INTEL_THROTTLE:
         if xe:
             node = os.path.join("throttle", node.replace("throttle_reason_", "reason_"))
         value = _int(os.path.join(gt, node))
         if value is None:
+            missing = True
             continue
         seen = True
         if value:
             active.append(label)
-    return active if seen else None
+    return active if seen and (not xe or active or not missing) else None
 
 
 def read_device(card: DrmCard, index: int) -> DeviceTelemetry:
@@ -581,14 +594,14 @@ def read_device(card: DrmCard, index: int) -> DeviceTelemetry:
         dev.gfx_clock = _hwmon_clock(hwmon, "sclk")
         dev.mem_clock = _hwmon_clock(hwmon, "mclk")
     if card.intel:
-        # i915's GT is on the DRM card; Xe's frequency nodes are below the PCI device's primary tile/GT.
+        # i915 uses the DRM card's GT; Xe uses the primary tile/GT below the PCI device.
         xe = card.driver == "xe"
-        gt = (os.path.join(d, "tile0", "gt0", "freq0") if xe
-              else os.path.join(os.path.dirname(d), "gt", "gt0"))
+        gt = (os.path.join(d, "tile0", "gt0", "freq0") if xe else
+              os.path.join(os.path.dirname(d), "gt", "gt0"))
         act = _int(os.path.join(gt, "act_freq" if xe else "rps_act_freq_mhz"))
         cur = _int(os.path.join(gt, "cur_freq" if xe else "rps_cur_freq_mhz"))
-        # rps_act_freq_mhz is the actual frequency; rps_cur_freq_mhz is what the driver last requested
-        # (per the kernel's intel_gt_sysfs_pm.c). The actual one can read 0 while the GPU idles in RC6,
+        # act_freq / rps_act_freq_mhz is actual; cur_freq / rps_cur_freq_mhz is the driver's request.
+        # The actual one can read 0 while the GPU idles in RC6,
         # which is a real reading, not a missing one; fall back to the requested one on kernels without it.
         dev.sm_clock = act if act is not None else cur
         if cur is not None:
@@ -1304,6 +1317,7 @@ class DrmCounters:
 
         The DRM spec allows busy counters to step back temporarily, so retain their high
         water mark. A total counter reset re-arms both counters; stalled totals are unknown.
+        Stalled, reset or new engines do not hide other engines with a valid interval.
         Like the nanosecond path, class capacity is not divided out (one busy engine is 100%).
         """
         rates = {}
@@ -1325,7 +1339,7 @@ class DrmCounters:
                 if total > before[1]:
                     values[name] = min(100.0, 100.0 * (high[name][0] - before[0]) / (total - before[1]))
             current[key] = (high, read_at)
-            if len(values) == len(cycles):
+            if values:
                 rates[key] = values
         for key, value in self._prev_cycles.items():
             if key not in current and now - value[1] < _PRUNE_NS:
@@ -1357,7 +1371,9 @@ class DrmCounters:
             card.client_util = card.client_video = None
             if (visible and not self.partial
                     and all(not (set(clients[key][0]) & incomplete)
-                            and cycle_rates[key] is not None for key in visible)):
+                            and cycle_rates[key] is not None
+                            and set(cycle_rates[key]) == set(clients[key][1].get("cycles") or {})
+                            for key in visible)):
                 classes = {}
                 for key in visible:
                     for name, pct in cycle_rates[key].items():

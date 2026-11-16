@@ -26,7 +26,8 @@ from gputaskman.amdsmi import AmdSmi, _read_vram_bytes
 from gputaskman.adl import Adl, _Metrics
 from gputaskman.app import GpuTaskManager, spark, stacked_bar
 from gputaskman.cli import main
-from gputaskman.collector import Collector, ProcRow, Snapshot, _llm_wanted, select_adapter, select_nv_device
+from gputaskman.collector import (Collector, ProcRow, Snapshot, _is_live, _llm_wanted, select_adapter,
+                                select_nv_device)
 from gputaskman.dxgi import Adapter
 from gputaskman.gguf import GgufInfo, read_gguf
 from gputaskman.handy import HandyEvidence, inspect_handy, _log_cache, _settings_cache
@@ -42,6 +43,7 @@ from gputaskman.procinfo import (AI_KINDS, AMBIGUOUS_EXTS, MODEL_EXTS, PATH_ARG_
                                 make_model)
 from gputaskman.report import to_dict, to_text
 from gputaskman.stores import ollama_names, store_name
+from gputaskman.tcc import TccAdapter
 from tools.capture_screenshots import for_publication
 
 
@@ -421,6 +423,23 @@ class DeviceSelectionTests(unittest.TestCase):
         intel = Adapter(2, "Intel GPU", 0x8086, 8 * GiB, 0, False)
         self.assertIsNone(select_nv_device(intel, [nv_gpu], 0))
 
+    @patch("gputaskman.collector.sys.platform", "win32")
+    def test_mcdm_peer_in_another_domain_does_not_hide_wddm_telemetry(self):
+        gpu = Adapter(1, "RTX", 0x10DE, 16 * GiB, 0, False, (6, 0, 0))
+        compute = TccAdapter((1 << 62) | 9 << 16 | 6 << 8, "GB300", 0x10DE, 256 * GiB, 0, False,
+                             (6, 0, 0), pci_domain=9, driver_model="MCDM")
+        nv_gpu = NvDevice(index=0, pci_bus="00000000:06:00.0", driver_model="WDDM")
+        nv_compute = NvDevice(index=1, pci_bus="00000009:06:00.0", driver_model="MCDM")
+        devices = [nv_compute, nv_gpu]
+        self.assertIs(select_nv_device(gpu, devices, 0, [compute, gpu]), nv_gpu)
+        self.assertIs(select_nv_device(compute, devices, 1, [compute, gpu]), nv_compute)
+
+        other = Adapter(2, "RTX", 0x10DE, 16 * GiB, 0, False, (6, 0, 0))
+        self.assertIsNone(select_nv_device(gpu, devices, 0, [compute, gpu, other]))
+        # TCC remains eligible in the existing DXGI pairing path, so stay conservative.
+        compute.driver_model = nv_compute.driver_model = "TCC"
+        self.assertIsNone(select_nv_device(gpu, devices, 0, [compute, gpu]))
+
 
 class MemoryTests(unittest.TestCase):
     def test_missing_wsl_stack_is_unknown_with_reason_in_text_json_and_ui(self):
@@ -560,6 +579,13 @@ class MemoryTests(unittest.TestCase):
         self.assertIn("VRAM 0 MB / 128 MB", text)
         self.assertIn("SHARED", text)
         self.assertIn("shared (in system RAM) 776 MB", text)
+        self.assertIn("GPU 42.0%  (Windows does not report temperature, power, clocks or PCIe", text)
+        self.assertNotIn("SM N/A", text)
+        output = io.StringIO()
+        Console(file=output, width=160).print(GpuTaskManager().render_device(s))
+        self.assertIn("GPU 42.0%", output.getvalue())
+        self.assertIn("Windows does not report temperature", output.getvalue())
+        self.assertNotIn("N/A", output.getvalue())
 
     def test_qualcomm_wddm_reports_shared_memory_and_engine_activity(self):
         memory = 45 * GiB
@@ -712,6 +738,36 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(gpu.gpu_pct, 10)
         self.assertFalse(gpu.paged_available)
 
+    def test_invalid_engine_counter_makes_process_unknown_but_keeps_ordinary_overshoot(self):
+        counters = GpuCounters.__new__(GpuCounters)
+        counters._query = None
+        data = {"engine": [
+            ("pid_42_luid_0x0_0x1_phys_0_eng_0_engtype_3D", 18_465_941_443_552.6),
+            ("pid_42_luid_0x0_0x1_phys_0_eng_1_engtype_Compute", 50.0),
+            ("pid_43_luid_0x0_0x1_phys_0_eng_0_engtype_3D", 312.0),
+            ("pid_44_luid_0x0_0x2_phys_0_eng_2_engtype_Compute", 150.0),
+            ("pid_45_luid_0x0_0x3_phys_0_eng_3_engtype_3D", float("nan")),
+            ("pid_46_luid_0x0_0x3_phys_0_eng_4_engtype_3D", -1.0),
+            ("pid_47_luid_0x0_0x3_phys_0_eng_5_engtype_3D", 1000.1),
+            ("pid_48_luid_0x0_0x3_phys_0_eng_6_engtype_3D", 1000.0),
+        ]}
+        with patch.object(counters, "_read", side_effect=lambda key: data.get(key, [])), \
+                patch("gputaskman.pdh._pdh", SimpleNamespace(PdhCollectQueryData=lambda query: 0)):
+            processes, adapters = counters.sample()
+        invalid = processes[1][42]
+        self.assertEqual(invalid.engines, {})
+        self.assertNotIn("engine", invalid.available)
+        self.assertIn("outside the supported 0-1000% range", invalid.engine_reason)
+        self.assertTrue(_is_live(invalid))
+        for pid in (45, 46, 47):
+            self.assertNotIn("engine", processes[3][pid].available)
+        self.assertEqual(processes[3][48].gpu_pct, 1000.0)
+        self.assertEqual(processes[1][43].engines["3d"], 312.0)
+        self.assertEqual(processes[1][43].gpu_pct, 312.0)
+        self.assertIsNone(adapters[1].util_gpu)
+        self.assertEqual(adapters[2].util_gpu, 100.0)
+        self.assertIsNone(adapters[3].util_gpu)
+
     def test_wddm_adapter_utilization_uses_busiest_combined_engine(self):
         counters = GpuCounters.__new__(GpuCounters)
         counters._query = None
@@ -729,10 +785,12 @@ class MemoryTests(unittest.TestCase):
     def test_missing_process_counters_are_not_reported_as_zero(self):
         s = snapshot()
         s.procs[0].gpu.available = {"dedicated"}
+        s.procs[0].gpu.engine_reason = "Windows per-process GPU engine counter unavailable."
         row = to_dict(s)["processes"][0]
         self.assertEqual(row["vram_bytes"], 8 * GiB)
         for name in ("shared_bytes", "committed_bytes", "paged_out_bytes", "gpu_pct", "engines"):
             self.assertIsNone(row[name])
+        self.assertEqual(row["engine_unavailable_reason"], s.procs[0].gpu.engine_reason)
         self.assertIn("N/A", to_text(s))
         s.procs[0].gpu.available.clear()
         self.assertIsNone(to_dict(s)["attributed"])
@@ -1241,6 +1299,27 @@ class ModelTests(unittest.TestCase):
             d.models[0].kind_hint = "decision model"
             self.assertEqual(classify(d, {}), "diffusion")
             self.assertIn("diffusion", AI_KINDS)
+
+    def test_relative_model_flags_resolve_against_target_cwd(self):
+        with tempfile.TemporaryDirectory() as target, tempfile.TemporaryDirectory() as monitor:
+            loaded, decoy = Path(target) / "model.gguf", Path(monitor) / "model.gguf"
+            loaded.touch()
+            decoy.touch()
+            cmd = ["llama-server", "-m", "model.gguf"]
+            old = os.getcwd()
+            os.chdir(monitor)
+            try:
+                with patch("gputaskman.procinfo.psutil.Process") as process:
+                    process.return_value.cwd.return_value = target
+                    self.assertEqual(_models_from_cmdline(cmd, 123), [str(loaded)])
+                    process.assert_called_once_with(123)
+                # The target's cwd is unknown: skip the path rather than guess with the monitor's cwd.
+                with patch("gputaskman.procinfo.psutil.Process") as process:
+                    process.return_value.cwd.side_effect = PermissionError("protected")
+                    self.assertEqual(_models_from_cmdline(cmd, 123), [])
+                self.assertEqual(_models_from_cmdline(cmd), [])
+            finally:
+                os.chdir(old)
 
     def test_layer_and_kv_estimates(self):
         model = GgufInfo(

@@ -155,6 +155,19 @@ class XeScanTests(unittest.TestCase):
         self.assertEqual(self.card.client_util, 0)
         self.assertIsNone(self.card.client_video)  # absent video counters are not idle video
 
+    def test_partial_engine_interval_keeps_process_rate_but_not_device_fallback(self):
+        def engines(busy, total, copy_busy, copy_total):
+            return fdinfo(busy, total) + (f"drm-cycles-bcs:\t{copy_busy}\n"
+                                         f"drm-total-cycles-bcs:\t{copy_total}\n")
+
+        self.sample(text=engines(100, 1000, 0, 1000))
+        row = self.sample(text=engines(600, 2000, 0, 1000))
+        self.assertEqual(row.engines, {"compute": 50})
+        self.assertIsNone(self.card.client_util)
+        row = self.sample(text=engines(1100, 3000, 500, 2000))
+        self.assertEqual(row.engines, {"compute": 50, "copy": 50})
+        self.assertEqual(self.card.client_util, 50)
+
     def test_integrated_xe_charges_gtt_not_cpu_only_memory(self):
         self.card.vram_total = 0
         self.card.integrated = True

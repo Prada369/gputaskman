@@ -54,7 +54,7 @@ cli.py ──► Collector.sample()  (collector.py)
             ├─ adapters        dxgi.py (Windows; tcc.py adds NVIDIA TCC GPUs that DXGI omits) / linux.enumerate_adapters / macos.enumerate_adapters
             ├─ counters        pdh.py GpuCounters (Windows PDH) / tcc.py TccCounters (NVML, TCC GPUs on Windows) /
             │                  linux.py LinuxCounters (NVML, + drm.py for amdgpu and Intel) /
-            │                  macos.py MacCounters (IOKit Metal clients + footprint poller)
+            │                  macos.py MacCounters (IOKit Metal clients + footprint poller: dirty and swapped graphics bytes)
             ├─ device metrics  nvml.py; drm.py read_device (AMD and Intel, Linux) (macOS: MacCounters.device from IOKit)
             ├─ WSL host        wslhost.py: HostStream (powershell PDH via interop), ContextTracker
             ├─ processes       procinfo.py: runtime DLLs, mapped files, cmdline, classify()
@@ -66,6 +66,7 @@ cli.py ──► HostSampler.sample()  (host.py: system RAM/CPU, OS-reported; sa
 cli.py diff ──► diff.py: compares two saved --json snapshots (no collection)
 cli.py record ──► record.py: appends one --json snapshot per interval (Collector, or LiveCollectors on Windows, sampled as the TUI does)
 cli.py summary ──► summary.py: averages and peaks of a saved record file, per run (no collection)
+cli.py replay ──► replay.py: plays a record JSONL file offline (no collection)
 ```
 
 The backend is chosen at import time in `collector.py`: `BACKEND` is `wddm` on Windows, `nvml` on
@@ -130,6 +131,7 @@ do not replace the driver's aggregate VRAM temperature with a derived channel ma
 | Change TCC support | `tcc.py`, the win32 `enumerate_adapters` wrapper in `collector.py` | NVML only, never a PDH query (Windows publishes no counters for a TCC GPU). NVML is asked once per process; TCC GPUs are paired to DXGI only when the domainless address is unambiguous (PCI domain 0), while the full domain stays in TCC identity and its synthetic LUID. Append after listed adapters so no existing GPU index moves. A process whose memory NVML hides is `n/a` with `attributed` unknown, never 0. No model breakdown (it needs the shared counter). `--list-gpus` distinguishes a successful empty probe from a failed/incomplete probe. Keep `tests/test_tcc.py` passing; mocks do not validate TCC hardware |
 | Change recording | `record.py`, `cli.py` `record_main` | Every line must equal the `--json` object (`report.to_json_dict`, which `dump()` also uses), so unknown stays `null` and nothing is added or summed. Append only, one compact line per sample, flushed as it is written: Ctrl+C or a kill keeps every finished sample, and an interrupted sample writes nothing. Sample the way the TUI does (budgeted scanning, `LiveCollectors` on Windows so a GPU disable/re-enable is recorded as unavailable with a reason); never add a probe, `scan_budget=None`, or `psutil.open_files()` |
 | Change record summaries | `summary.py` | Reads a saved record file only. Readings are shown as recorded (never capped); `null` is skipped, never 0, and a metric with no readings is omitted. Process VRAM peaks use measured `vram_bytes` only (same `(host, name)` summed within a sample). Unparseable lines are skipped and counted. Runs split at a GPU/backend change, a backwards `taken`, or a gap longer than `RUN_GAP_FACTOR` times the median interval or `RUN_GAP_MIN` seconds, whichever is longer |
+| Change replay | `replay.py`, `cli.py` `replay_main` | Offline: read a `record` file only, never sample the GPU. `Playback` is tested without a terminal. Use `taken` when it is strictly increasing; otherwise 1s per snapshot, labeled as not recorded time. A trailing incomplete line is skipped; any other malformed line is skipped and reported |
 
 ## Verify
 
