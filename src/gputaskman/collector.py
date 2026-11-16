@@ -198,7 +198,10 @@ def select_nv_device(adapter: Adapter | None, devices: list[NvDevice], gpu_index
             return matches[0] if len(matches) == 1 else None
         if adapter.pci_address is None:
             return None
-        if adapters is not None and sum(a.pci_address == adapter.pci_address for a in adapters) != 1:
+        # MCDM telemetry is ineligible for a DXGI adapter below, so its known compute-only
+        # adapter cannot make a WDDM peer at the same BDF in another PCI domain ambiguous.
+        if adapters is not None and sum(a.pci_address == adapter.pci_address for a in adapters
+                                        if not (isinstance(a, TccAdapter) and a.driver_model == "MCDM")) != 1:
             return None
         matches = [d for d in devices if _bdf(d.pci_bus) == adapter.pci_address and d.driver_model != "MCDM"]
         if len(matches) == 1:

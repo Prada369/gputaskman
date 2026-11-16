@@ -175,7 +175,7 @@ def main() -> None:
                 print(f"   {adapter.identity_status}")
         status = tcc_discovery_status()
         if status:
-            print(f"TCC discovery: {status}", file=sys.stderr)
+            print(f"TCC/MCDM discovery: {status}", file=sys.stderr)
         if BACKEND == "wsl" and (not adapters or any(a.vendor_id == VENDOR_AMD for a in adapters)):
             from .amdsmi import amdsmi_status
 

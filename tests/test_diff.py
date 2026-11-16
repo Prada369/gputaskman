@@ -9,7 +9,10 @@ import unittest
 from unittest.mock import patch
 
 from gputaskman.cli import main
+from gputaskman.collector import Snapshot
 from gputaskman.diff import diff, load, match, to_text
+from gputaskman.report import to_dict
+from gputaskman.tcc import TccAdapter
 
 GiB = 1 << 30
 MiB = 1 << 20
@@ -246,6 +249,49 @@ class AdapterGuardTests(unittest.TestCase):
         d = self.pair(gpu_adapter(luid=0x4BB7), gpu_adapter(luid=0x5A01))  # a reboot, or the adapter was re-enabled
         self.assertEqual((d["adapter_check"], d["adapter_note"]), ("pci", None))
         self.assertNotIn("Warning", to_text(d))
+
+    def test_compute_domains_survive_json_without_device_telemetry(self):
+        snapshots = []
+        for domain in (0, 9):
+            adapter = TccAdapter((1 << 62) | domain << 16 | 1 << 8, "GB300", 0x10DE, 256 * GiB, 0, False,
+                                 (1, 0, 0), pci_domain=domain, driver_model="MCDM")
+            s = Snapshot(100, adapter, [adapter], None, "", "", 256 * GiB, None, None)
+            data = json.loads(json.dumps(to_dict(s)))
+            self.assertEqual(data["adapter"]["pci_domain"], domain)
+            snapshots.append(data)
+        with self.assertRaisesRegex(ValueError, "different adapters.*PCI domains 00000000 vs 00000009"):
+            diff(*snapshots)
+        self.assertEqual(diff(snapshots[1], snapshots[1])["adapter_check"], "pci")
+
+    def test_historical_device_pci_domains_separate_same_bdf_compute_gpus(self):
+        before = snap([], 0, 0, adapter=gpu_adapter(luid=(1 << 62) | 9 << 16 | 1 << 8))
+        after = snap([], 0, 0, adapter=gpu_adapter(luid=(1 << 62) | 10 << 16 | 1 << 8))
+        before["device"] = {"driver_model": "MCDM", "pci_bus": "00000009:01:00.0"}
+        after["device"] = {"driver_model": "MCDM", "pci_bus": "0000000A:01:00.0"}
+        for explicit_domain in (False, True):
+            with self.subTest(explicit_domain=explicit_domain):
+                if explicit_domain:
+                    after["adapter"]["pci_domain"] = 10
+                    after["device"] = None
+                with self.assertRaisesRegex(ValueError, "different adapters.*PCI domains 00000009 vs 0000000a"):
+                    diff(before, after)
+        after["adapter"].pop("pci_domain")
+        after["device"] = {"pci_bus": "9:1:0.0"}
+        self.assertEqual(diff(before, after)["adapter_check"], "pci")
+
+    def test_missing_or_malformed_pci_domains_keep_older_pairing(self):
+        before = snap([], 0, 0, adapter={**gpu_adapter(), "pci_domain": 9})
+        after = snap([], 0, 0, adapter=gpu_adapter(luid=0x5A01))
+        for domain in (None, -1, 1 << 32, True, "9"):
+            with self.subTest(domain=domain):
+                after["adapter"]["pci_domain"] = domain
+                self.assertEqual(diff(before, after)["adapter_check"], "pci")
+        after["adapter"].pop("pci_domain")
+        for device in (None, {}, {"pci_bus": None}, {"pci_bus": "bad"},
+                       {"pci_bus": "0000000a:02:00.0"}, {"pci_bus": "100000000:01:00.0"}):
+            with self.subTest(device=device):
+                after["device"] = device
+                self.assertEqual(diff(before, after)["adapter_check"], "pci")
 
     def test_conflicting_vendors_are_refused_without_pci_addresses(self):
         with self.assertRaisesRegex(ValueError, "vendor 0x10de vs 0x1002"):
