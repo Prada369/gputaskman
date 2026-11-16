@@ -60,6 +60,6 @@ change system policy.
 ## Source and status
 
 This is a community side project, not part of the upstream TUI release. Source and updates:
-[Prada369/gputaskman, `fix/intel-xe-telemetry`](https://github.com/Prada369/gputaskman/tree/sideproject/linux-widget-package/packaging/linux-widget).
+[Prada369/gputaskman, `sideproject/linux-widget-package`](https://github.com/Prada369/gputaskman/tree/sideproject/linux-widget-package/packaging/linux-widget).
 The widget has been exercised on Ubuntu with an Intel Arc Pro B65; other GPUs and desktop sessions
 may expose different readings or tray behavior.
