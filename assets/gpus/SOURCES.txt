@@ -1,0 +1,6 @@
+ASRock Intel Arc Pro B65 Creator 32GB product image
+Source: https://www.asrock.com/Graphics-Card/Intel/Intel%20Arc%20Pro%20B65%20Creator%2032GB/
+Image: https://www.asrock.com/Graphics-Card/photo/Intel%20Arc%20Pro%20B65%20Creator%2032GB%28M2%29.png
+Product photography belongs to ASRock. Used as a local product reference thumbnail.
+Published specifications are manufacturer-reported ratings, not live measurements.
+The full PCI identity 8086:e222 / 1849:6027 is the owner's confirmed B65 board.

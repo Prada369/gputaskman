@@ -3,10 +3,37 @@ import unittest
 from unittest.mock import MagicMock, patch
 from types import SimpleNamespace
 
-from gputaskman.widget import gpu_identity, local_model_names, memory, metric, model_cards, snapshot_source
+from gputaskman.widget import device_readings, gpu_identity, local_model_names, memory, metric, model_cards, product_info, snapshot_source
 
 
 class WidgetDataTests(unittest.TestCase):
+    def test_b65_product_name_requires_the_exact_confirmed_board(self):
+        hardware = dict(vendor='0x8086', device='0xe222', subsystem_vendor='0x1849', subsystem_device='0x6027')
+        self.assertEqual(product_info(hardware)['name'], 'Intel Arc Pro B65')
+        changed = dict(hardware, subsystem_device='0x9999')
+        self.assertEqual(product_info(changed), {})
+
+    def test_intel_readings_omit_irrelevant_nvidia_fields_and_explain_permissions(self):
+        snapshot = {'adapter': {'vendor_id': 0x8086}, 'device': {
+            'temp': 0, 'util_gpu': None, 'pcie_gen': None, 'compute_cap': '', 'pstate': None,
+            'metric_status': {'util_gpu': 'perf access denied', 'pcie_gen': 'PCI capability read access required',
+                              'compute_cap': 'NVIDIA-specific metric', 'pstate': 'NVIDIA-specific metric'}}}
+        rows, unavailable = device_readings(snapshot)
+        self.assertEqual(rows['GPU temperature'][0], '0°C')
+        self.assertNotIn('GPU load', rows)
+        self.assertEqual(unavailable['GPU load'], 'perf access denied')
+        self.assertNotIn('P-state', unavailable)
+        self.assertNotIn('CUDA capability', unavailable)
+        self.assertFalse(any(value[0] == 'n/a' for value in rows.values()))
+
+    def test_published_specs_never_supply_missing_live_link_or_bandwidth(self):
+        hardware = dict(vendor='0x8086', device='0xe222', subsystem_vendor='0x1849', subsystem_device='0x6027')
+        rows, _ = device_readings({'hardware': hardware, 'adapter': {'vendor_id': 0x8086},
+                                   'device': {'pcie_gen': None, 'mem_read_bps': None}})
+        self.assertNotIn('Live PCIe generation', rows)
+        self.assertNotIn('Memory read traffic', rows)
+        self.assertIn('capability', product_info(hardware)['specs']['PCIe support'])
+
     def test_hardware_make_model_and_board_are_separate(self):
         result = gpu_identity({"gpu_index": 2, "gpu_id": "pci-a", "adapter": {"vendor_id": 0x8086},
                                "hardware": {"make": "Intel", "model": "Battlemage G31", "board_make": "ASRock"}})

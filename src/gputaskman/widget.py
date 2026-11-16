@@ -14,6 +14,82 @@ import signal
 import subprocess
 import time
 
+PRODUCT_SOURCE = "https://www.asrock.com/Graphics-Card/Intel/Intel%20Arc%20Pro%20B65%20Creator%2032GB/"
+
+
+def product_info(hardware):
+    # Exact board identity observed on the owner's B65, confirmed by the owner.
+    # Do not rename every G31 or every Intel adapter based on a generic chip name.
+    identity = tuple(str(hardware.get(key, "")).lower() for key in
+                     ("vendor", "device", "subsystem_vendor", "subsystem_device"))
+    if identity != ("0x8086", "0xe222", "0x1849", "0x6027"):
+        return {}
+    return {"name": "Intel Arc Pro B65", "board": "ASRock · Creator 32GB",
+            "image": "asrock-b65-creator.png", "source": PRODUCT_SOURCE,
+            "specs": {"GPU product": "Intel Arc Pro B65", "Board maker": "ASRock",
+                      "Architecture": "Xe2-HPG · Battlemage G31", "Memory capacity": "32 GB GDDR6",
+                      "Memory interface": "256-bit", "Memory data rate": "19 Gbps",
+                      "Memory bandwidth": "608 GB/s (rated)", "Graphics clock": "2,400 MHz (rated)",
+                      "Xe cores": "20", "XMX AI engines": "160", "Ray tracing units": "20",
+                      "PCIe support": "PCIe 5.0 ×16 (capability)", "Display outputs": "4 × DisplayPort 2.1",
+                      "Board power": "200 W (reference rating)"}}
+
+
+READING_TITLES = {"mem_total": "Usable VRAM", "mem_used": "Used VRAM", "mem_reserved": "Reserved VRAM",
+    "util_gpu": "GPU load", "util_mem": "Memory activity", "power_w": "Board power",
+    "power_limit_w": "Power limit", "temp": "GPU temperature", "vram_temp": "VRAM temperature",
+    "sm_clock": "GPU clock", "sm_clock_max": "Maximum GPU clock", "gfx_clock": "Graphics clock",
+    "mem_clock": "Memory clock", "video_clock": "Video clock", "fan_rpm": "Fan speed",
+    "fan": "Fan percentage", "pcie_rx_kbs": "PCIe receive", "pcie_tx_kbs": "PCIe transmit",
+    "pcie_gen": "Live PCIe generation", "pcie_width": "Live PCIe width", "video": "Video engine load",
+    "mem_read_bps": "Memory read traffic", "mem_write_bps": "Memory write traffic",
+    "mem_bandwidth_max_bps": "Reported bandwidth ceiling", "mem_bandwidth_pct": "Bandwidth use",
+    "enc": "Encoder load", "dec": "Decoder load", "pstate": "P-state", "compute_cap": "CUDA capability"}
+
+
+def device_readings(snapshot):
+    """Available measurements and explained gaps; no irrelevant vendor placeholders."""
+    nv, adapter = snapshot.get("device") or {}, snapshot.get("adapter") or {}
+    intel = adapter.get("vendor_id") == 0x8086 or nv.get("source") == "Intel sysfs"
+    skip = {"util_mem", "enc", "dec", "pstate", "compute_cap", "fan"} if intel else set()
+    rows, unavailable = {}, {}
+    statuses, sources = nv.get("metric_status") or {}, nv.get("metric_sources") or {}
+    for key, title in READING_TITLES.items():
+        if key in skip:
+            continue
+        value = nv.get(key)
+        if value is None or value == "":
+            # Optional fields with no provider have no useful empty row.
+            if key in statuses:
+                unavailable[title] = statuses[key]
+            continue
+        if key in ("mem_total", "mem_used", "mem_reserved"):
+            text = memory(value)
+        elif key.endswith("_bps"):
+            text = metric(value / 1e9, " GB/s", 2)
+        elif key.endswith("_kbs"):
+            text = metric(value / 1024, " MiB/s", 2)
+        elif key in ("temp", "vram_temp"):
+            text = metric(value, "°C")
+        elif "clock" in key:
+            text = metric(value, " MHz")
+        elif key in ("power_w", "power_limit_w"):
+            text = metric(value, " W", 1)
+        elif key == "fan_rpm":
+            text = metric(value, " rpm")
+        elif key in ("util_gpu", "util_mem", "video", "enc", "dec", "fan", "mem_bandwidth_pct"):
+            text = metric(value, "%", 1)
+        else:
+            text = str(value)
+        if key == "util_gpu" and nv.get("util_kind"):
+            text += " (estimated)"
+        rows[title] = (text, sources.get(key) or nv.get("source") or "Device counter")
+    for key, value in (nv.get("temperature_sensors_c") or {}).items():
+        rows["Sensor " + key] = (metric(value, "°C"), "Intel hwmon sensor")
+    if snapshot.get("shared_used") is not None:
+        rows["Shared GPU memory"] = (memory(snapshot["shared_used"]), "Driver-reported")
+    return rows, unavailable
+
 
 def metric(value, unit="", precision=0):
     if value is None or not isinstance(value, (int, float)) or not math.isfinite(value):
@@ -61,9 +137,10 @@ def gpu_identity(snapshot):
     nv = snapshot.get("device") or {}
     make = {0x8086: "Intel", 0x10de: "NVIDIA", 0x1002: "AMD", 0x106b: "Apple",
             0x19e5: "Huawei"}.get(adapter.get("vendor_id"), hardware.get("make") or "Unknown maker")
-    model = hardware.get("model") or snapshot.get("gpu") or nv.get("name") or "Unknown GPU"
+    product = product_info(hardware)
+    model = product.get("name") or hardware.get("model") or snapshot.get("gpu") or nv.get("name") or "Unknown GPU"
     return {"make": make, "model": model, "name": hardware.get("name") or model,
-            "board_make": hardware.get("board_make") or "Not reported",
+            "board_make": hardware.get("board_make") or "Not reported", "product": product,
             "board_model": hardware.get("board_model") or "Not reported",
             "pci": nv.get("pci_bus") or "", "index": snapshot.get("gpu_index", 0),
             "id": snapshot.get("gpu_id") or f"{adapter.get('vendor_id')}:{adapter.get('luid', nv.get('pci_bus', 'default'))}"}

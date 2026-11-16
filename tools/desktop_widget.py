@@ -16,23 +16,24 @@ import gi
 
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
+gi.require_version("GdkPixbuf", "2.0")
 gi.require_version("AyatanaAppIndicator3", "0.1")
 from gi.repository import AyatanaAppIndicator3 as Indicator
-from gi.repository import Gdk, Gio, GLib, Gtk, Pango
+from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from gputaskman.widget import gpu_identity, memory, metric, model_cards
+from gputaskman.widget import device_readings, gpu_identity, memory, metric, model_cards
 
 CSS = b"""
 window.snapshot { background: linear-gradient(150deg, #141c31, #101624 70%); color: #edf5ff;
     border: 1px solid #35415d; border-radius: 20px; }
 .snapshot label { color: #e9effb; }
 .snapshot .eyebrow { font-size: 10px; font-weight: bold; color: #9fafff; letter-spacing: 2px; }
-.snapshot .gpu-name { font-size: 25px; font-weight: bold; letter-spacing: -0.5px; }
+.snapshot .gpu-name { font-size: 24px; font-weight: bold; letter-spacing: -0.5px; }
 .snapshot .muted { color: #95a4c1; font-size: 11px; }
 .snapshot .small { font-size: 10px; color: #95a4c1; }
 .snapshot .live { color: #70e3c2; font-size: 10px; font-weight: bold; }
-.snapshot .card { background: #1a2337; border: 1px solid #2b3853; border-radius: 12px; padding: 12px; }
+.snapshot .card { background: #1a2337; border: 1px solid #2b3853; border-radius: 12px; padding: 9px 12px; }
 .snapshot .memory-card { background: linear-gradient(110deg, #243251, #1a2b39); border-color: #3d5272; }
 .snapshot .memory-reading { font-size: 24px; font-weight: bold; color: #e5fbf5; }
 .snapshot .reading { font-size: 24px; font-weight: bold; color: #f4f7ff; }
@@ -41,7 +42,7 @@ window.snapshot { background: linear-gradient(150deg, #141c31, #101624 70%); col
 .snapshot .warning { font-size: 11px; color: #f1c48b; }
 .snapshot .badge { background: #28395a; color: #b9d4ff; padding: 4px 8px; border-radius: 6px;
     font-size: 10px; font-weight: bold; }
-.snapshot .gpu-icon { color: #aabaff; background: #283552; border-radius: 12px; padding: 14px; }
+.snapshot .gpu-icon { color: #aabaff; background: #283552; border-radius: 12px; padding: 8px; }
 .snapshot .metric-icon { color: #93a8e8; }
 .snapshot .model-card { background: linear-gradient(135deg, #262b45, #1a2438); border-color: #3b4167; }
 .snapshot .inventory-name { font-size: 13px; font-weight: bold; }
@@ -160,6 +161,8 @@ class GpuWidget(Gtk.Application):
         self.histories = {}
         self.model_signature = None
         self.detail_values = {}
+        self.detail_keys = {}
+        self.current_product_image = None
         self.stop_timer = None
 
     def do_startup(self):
@@ -224,7 +227,7 @@ class GpuWidget(Gtk.Application):
 
         scroll = Gtk.ScrolledWindow()
         scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        content = box(spacing=14)
+        content = box(spacing=11)
         content.set_margin_start(20)
         content.set_margin_end(20)
         content.set_margin_bottom(12)
@@ -240,7 +243,13 @@ class GpuWidget(Gtk.Application):
         hero = box(False, 14)
         icon = box(style="gpu-icon")
         icon.set_valign(Gtk.Align.CENTER)
-        icon.add(GpuIcon())
+        self.hero_icon = Gtk.Stack()
+        self.hero_icon.add_named(GpuIcon(), "generic")
+        self.product_image = Gtk.Image()
+        self.hero_icon.add_named(self.product_image, "product")
+        self.hero_icon.show_all()
+        self.hero_icon.set_visible_child_name("generic")
+        icon.add(self.hero_icon)
         hero.pack_start(icon, False, False, 0)
         hero_text = box(spacing=5)
         self.gpu_make = label("GPU", "eyebrow")
@@ -275,17 +284,11 @@ class GpuWidget(Gtk.Application):
         metrics = Gtk.Grid(column_spacing=8, row_spacing=8)
         metrics.set_column_homogeneous(True)
         self.metrics = {}
-        icons = {"util_gpu": "utilities-system-monitor-symbolic", "temp": "temperature-symbolic",
-                 "power_w": "battery-full-charged-symbolic", "sm_clock": "speedometer-symbolic",
-                 "fan_rpm": "weather-windy-symbolic", "vram_temp": "temperature-symbolic"}
         for index, (key, title) in enumerate((("util_gpu", "GPU LOAD"), ("temp", "GPU TEMP"),
                          ("power_w", "POWER"), ("sm_clock", "GPU CLOCK"),
                          ("fan_rpm", "FAN"), ("vram_temp", "VRAM TEMP"))):
             card = box(spacing=3, style="card")
-            metric_icon = Gtk.Image.new_from_icon_name(icons[key], Gtk.IconSize.MENU)
-            metric_icon.set_halign(Gtk.Align.START)
-            metric_icon.get_style_context().add_class("metric-icon")
-            card.pack_start(metric_icon, False, False, 2)
+            # Keep the controls compact so model activity fits on the desktop.
             caption = label(title, "section")
             card.pack_start(caption, False, False, 0)
             value = label("n/a", "reading")
@@ -319,11 +322,27 @@ class GpuWidget(Gtk.Application):
         content.pack_start(self.library_expander, False, False, 0)
 
         expander = Gtk.Expander(label="All GPU specs & sensors")
+        spec_body = box(spacing=12)
+        self.published_specs = box(spacing=6)
+        self.published_specs.set_no_show_all(True)
+        self.published_specs.pack_start(label("PUBLISHED HARDWARE SPECIFICATIONS", "section"), False, False, 0)
+        self.product_specs = label("", "muted", True)
+        self.published_specs.pack_start(self.product_specs, False, False, 0)
+        self.published_specs.pack_start(label("Manufacturer ratings; current live readings are below.", "small", True), False, False, 0)
+        spec_body.pack_start(self.published_specs, False, False, 0)
+        spec_body.pack_start(label("AVAILABLE LIVE READINGS", "section"), False, False, 0)
         self.spec_grid = Gtk.Grid(column_spacing=14, row_spacing=6)
         self.spec_grid.set_margin_top(10)
         self.spec_grid.set_margin_bottom(8)
-        expander.add(self.spec_grid)
+        spec_body.pack_start(self.spec_grid, False, False, 0)
+        expander.add(spec_body)
         content.pack_start(expander, False, False, 0)
+        self.unavailable_expander = Gtk.Expander(label="Unavailable readings")
+        self.unavailable_expander.set_no_show_all(True)
+        self.unavailable_readings = label("", "small", True)
+        self.unavailable_readings.set_margin_top(8)
+        self.unavailable_expander.add(self.unavailable_readings)
+        content.pack_start(self.unavailable_expander, False, False, 0)
         processes = Gtk.Expander(label="GPU processes")
         self.process_text = label("Waiting for data", "small", True)
         self.process_text.set_margin_top(8)
@@ -533,6 +552,24 @@ class GpuWidget(Gtk.Application):
         self.gpu_make.set_text(f"GPU {identity_info['index']}  /  {identity_info['make'].upper()}")
         self.gpu_name.set_text(identity_info["model"])
         self.board_name.set_text(f"Board by {identity_info['board_make']}" if identity_info['board_make'] != 'Not reported' else "Board maker not reported")
+        product = identity_info["product"]
+        if product:
+            chip = (snapshot.get("hardware") or {}).get("model", "")
+            self.board_name.set_text(" · ".join(x for x in (chip, product["board"]) if x))
+        image_name = product.get("image")
+        if image_name and image_name != self.current_product_image:
+            image_path = Path(__file__).resolve().parents[1] / "assets/gpus" / image_name
+            try:
+                pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(str(image_path), 125, 90, True)
+                self.product_image.set_from_pixbuf(pixbuf)
+                self.product_image.set_tooltip_text("ASRock Intel Arc Pro B65 Creator product photograph")
+                self.hero_icon.set_visible_child_name("product")
+                self.current_product_image = image_name
+            except GLib.Error:
+                self.hero_icon.set_visible_child_name("generic")
+        elif not image_name:
+            self.hero_icon.set_visible_child_name("generic")
+            self.current_product_image = None
         identity = [nv.get("pci_bus"), nv.get("driver_model"), snapshot.get("driver")]
         self.identity.set_text(" · ".join(x for x in identity if x))
         used, total = snapshot.get("vram_used"), snapshot.get("vram_total")
@@ -551,6 +588,9 @@ class GpuWidget(Gtk.Application):
         for key, (value_label, caption, card) in self.metrics.items():
             value_label.set_text(metric(nv.get(key), *formats[key]))
             reason = (nv.get("metric_status") or {}).get(key)
+            if nv.get(key) is None:
+                low = (reason or "").lower()
+                value_label.set_text("Locked" if "denied" in low or "privilege" in low else "Unknown")
             provenance = sources.get(key) or (nv.get("util_kind") if key == "util_gpu" else None)
             card.set_tooltip_text(reason if nv.get(key) is None else provenance or nv.get("source"))
             if key == "util_gpu":
@@ -591,7 +631,8 @@ class GpuWidget(Gtk.Application):
         self.process_text.set_text("\n".join(f"{p.get('name', '?')} · PID {p.get('pid')} · {memory(p.get('vram_bytes'))} measured VRAM · {metric(p.get('gpu_pct'), '%', 1)} GPU" for p in procs) or "No visible GPU processes")
         notes = [snapshot.get("memory_note"), snapshot.get("counter_status"), snapshot.get("process_status")]
         notes.extend(f"{key}: {value}" for key, value in sources.items())
-        notes.extend(f"{key}: {value}" for key, value in (nv.get("metric_status") or {}).items())
+        _, unavailable = device_readings(snapshot)
+        notes.extend(f"{key}: {value}" for key, value in unavailable.items())
         self.provenance.set_text("\n\n".join(x for x in notes if x) or "Device-reported counters")
         tray_parts = ["GPU" if len(self.gpu_snapshots) == 1 else f"GPU {identity_info['index']}"]
         if nv.get("util_gpu") is not None:
@@ -606,62 +647,65 @@ class GpuWidget(Gtk.Application):
             self.set_unavailable(snapshot["error"])
 
     def update_specs(self, snapshot):
+        rows, unavailable = device_readings(snapshot)
+        identity = gpu_identity(snapshot)
         nv = snapshot.get("device") or {}
-        values = {"GPU": snapshot.get("gpu"), "Driver": snapshot.get("driver"),
-                  "Backend": snapshot.get("backend"), "CUDA": snapshot.get("cuda"),
-                  "Usable VRAM": memory(snapshot.get("vram_total")),
-                  "Shared GPU memory": memory(snapshot.get("shared_used"))}
-        for key, value in (snapshot.get("hardware") or {}).items():
-            values["PCI " + key.replace("_", " ")] = value
-        units = {"temp": "°C", "vram_temp": "°C", "power_w": " W", "power_limit_w": " W",
-                 "sm_clock": " MHz", "sm_clock_max": " MHz", "gfx_clock": " MHz", "mem_clock": " MHz",
-                 "video_clock": " MHz", "fan_rpm": " rpm", "fan": "%", "util_gpu": "%",
-                 "util_mem": "%", "video": "%", "enc": "%", "dec": "%", "mem_bandwidth_pct": "%"}
-        titles = {"name": "Device name", "pci_bus": "PCI address", "driver_model": "Kernel driver",
-                  "mem_total": "Usable VRAM", "mem_used": "Used VRAM", "mem_reserved": "Reserved VRAM",
-                  "util_gpu": "GPU load", "util_mem": "Memory activity", "power_w": "Power",
-                  "power_limit_w": "Power limit", "temp": "GPU temperature", "vram_temp": "VRAM temperature",
-                  "sm_clock": "GPU clock", "sm_clock_max": "Max GPU clock", "gfx_clock": "Graphics clock",
-                  "mem_clock": "Memory clock", "video_clock": "Video clock", "fan_rpm": "Fan speed",
-                  "fan": "Fan percentage", "pcie_rx_kbs": "PCIe receive", "pcie_tx_kbs": "PCIe transmit",
-                  "pcie_gen": "Live PCIe generation", "pcie_width": "Live PCIe width",
-                  "mem_read_bps": "Memory read traffic", "mem_write_bps": "Memory write traffic",
-                  "mem_bandwidth_max_bps": "Reported max bandwidth", "mem_bandwidth_pct": "Bandwidth use",
-                  "source": "Reading provider", "util_kind": "GPU load provenance"}
-        for key, value in nv.items():
-            if key in ("metric_sources", "metric_status", "memory_note", "temperature_sensors_c"):
-                continue
-            title = titles.get(key, key.replace("_", " ").capitalize())
-            if key.startswith("mem_") and key in ("mem_total", "mem_used", "mem_reserved"):
-                value = memory(value)
-            elif key.endswith("_bps"):
-                value = metric(value / 1e9 if value is not None else None, " GB/s", 2)
-            elif key.endswith("_kbs"):
-                value = metric(value / 1024 if value is not None else None, " MiB/s", 2)
-            elif key in units:
-                value = metric(value, units[key])
-            elif isinstance(value, (dict, list)):
-                value = json.dumps(value)
-            values[title] = str(value) if value is not None and value != "" else "n/a"
-        for key, value in (nv.get("temperature_sensors_c") or {}).items():
-            values["Sensor " + key] = metric(value, "°C")
-        adapter = snapshot.get("adapter") or {}
-        if adapter.get("vendor_id") is not None:
-            values["PCI vendor ID"] = f"0x{adapter['vendor_id']:04x}"
-        for value_label in self.detail_values.values():
+        values = {"GPU product": (identity["model"], "Product identity"),
+                  "GPU make": (identity["make"], "PCI vendor"),
+                  "Board maker": (identity["board_make"], "PCI subsystem vendor")}
+        for name, value in (("PCI address", identity["pci"]), ("Kernel driver", nv.get("driver_model")),
+                            ("Driver", snapshot.get("driver"))):
+            if value:
+                values[name] = (value, "Installed hardware/driver")
+        values.update(rows)
+        product = identity["product"]
+        if product:
+            self.product_specs.set_text("\n".join(f"{key}  ·  {value}" for key, value in product["specs"].items()))
+            self.product_specs.set_tooltip_text("Source: " + product["source"])
+            self.published_specs.show()
+            for child in self.published_specs.get_children():
+                child.show_all()
+        else:
+            self.published_specs.hide()
+        for name, value_label in self.detail_values.items():
             value_label.set_text("n/a")
-        for name, value in values.items():
+            value_label.hide()
+            self.detail_keys[name].hide()
+        for name, (value, source) in values.items():
             if name not in self.detail_values:
                 row = len(self.detail_values)
                 key_label = label(name, "small")
-                key_label.set_size_request(155, -1)
+                key_label.set_no_show_all(True)
+                key_label.set_size_request(160, -1)
                 value_label = label("", "small", True)
+                value_label.set_no_show_all(True)
                 value_label.set_hexpand(True)
                 self.spec_grid.attach(key_label, 0, row, 1, 1)
                 self.spec_grid.attach(value_label, 1, row, 1, 1)
                 self.detail_values[name] = value_label
+                self.detail_keys[name] = key_label
             self.detail_values[name].set_text(value)
-        self.spec_grid.show_all()
+            self.detail_values[name].set_tooltip_text(source)
+            self.detail_values[name].show()
+            self.detail_keys[name].show()
+        groups = {}
+        for title, reason in unavailable.items():
+            low = reason.lower()
+            if "perf" in low and ("denied" in low or "privilege" in low):
+                reason = "Protected performance counters. The GPU Sensors desktop helper can supply administrator readings."
+            elif "pmt" in low and "denied" in low:
+                reason = "Protected Intel PMT telemetry. The GPU Sensors desktop helper can supply administrator readings."
+            elif "capability" in low or "configuration is truncated" in low:
+                reason = "The current user cannot read the PCI configuration needed for live link status."
+            groups.setdefault(reason, []).append(title)
+        self.unavailable_readings.set_text("\n\n".join(
+            ", ".join(titles) + "\n" + reason for reason, titles in groups.items()))
+        self.unavailable_expander.set_label(f"Unavailable readings · {len(unavailable)} · why?")
+        if unavailable:
+            self.unavailable_expander.show()
+            self.unavailable_readings.show()
+        else:
+            self.unavailable_expander.hide()
 
     def set_unavailable(self, reason):
         self.live.set_text("● UNAVAILABLE")

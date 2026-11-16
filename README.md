@@ -669,10 +669,21 @@ Launching it again restores the existing widget; `--start-hidden` starts hidden.
 The system Python needs `python3-gi`, GTK 3 and AyatanaAppIndicator3 bindings;
 `--python` chooses the Python environment with gputaskman dependencies:
 `GDK_BACKEND=x11 /usr/bin/python3 tools/desktop_widget.py --python .venv/bin/python`.
-One subprocess uses the existing budgeted collector every two seconds, including
-while hidden. No inference or workloads are started. Model mappings, launch hints,
+One subprocess samples all detected GPUs every two seconds, including while hidden;
+`--gpu N` limits the list. Each named GPU has separate readings, model activity and
+history, with the scan budget shared across cards. Make, PCI model and board maker
+come from PCI identity. The owner's confirmed ASRock `8086:e222 / 1849:6027` board
+also shows its Intel Arc Pro B65 product name and an ASRock product thumbnail
+(source and attribution in `assets/gpus/SOURCES.txt`). Published specifications
+remain separate from live counters; rated bandwidth or PCIe capabilities never
+fill unavailable measurements. Live tables show available readings, while a
+separate section explains protected or unsupported counters. Intel hides irrelevant
+NVIDIA-only placeholders. The existing GPU Sensors desktop helper can provide
+protected counters when the user starts it; the widget never elevates itself.
+The local model library lists names from existing Ollama manifests separately
+from active GPU models. No inference or workloads are started. Model mappings, launch hints,
 runtime reports and measured process VRAM remain distinguished; installed-only
-models do not become active cards. Missing counters stay `n/a`; a stopped/stale
+models do not become active cards. Missing counters remain unknown; a stopped/stale
 reader is labeled unavailable. The normal terminal commands remain available.
 
 ```powershell
