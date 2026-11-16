@@ -65,6 +65,23 @@ class HostFeedTests(unittest.TestCase):
         self.reader.apply(self.card, device)
         self.assertEqual((device.util_gpu, device.temp, device.fan_rpm, device.power_w), (0, 30, 0, 0))
 
+    def test_imported_sensor_kinds_stay_paired_with_their_readings(self):
+        self.publish(temp=62, temp_kind='CPU package', power_w=8, power_kind='RAPL uncore')
+        device = DeviceTelemetry(index=0)
+        self.reader.apply(self.card, device)
+        self.assertEqual((device.temp, device.temp_kind), (62, 'CPU package'))
+        self.assertEqual((device.power_w, device.power_kind), (8, 'RAPL uncore'))
+        native = DeviceTelemetry(index=0, temp=30, temp_kind='', power_w=0, power_kind='Board')
+        self.reader.apply(self.card, native)
+        self.assertEqual((native.temp, native.temp_kind, native.power_w, native.power_kind), (30, '', 0, 'Board'))
+
+    def test_invalid_temperature_kind_rejects_the_sample(self):
+        for kind in (None, [], 42, 'x' * 257):
+            with self.subTest(kind=kind):
+                self.publish(temp=62)
+                self.edit(lambda body: body['device'].update(temp_kind=kind))
+                self.assertIsNone(self.reader.read()[0])
+
     def test_auxiliary_temperatures_fill_only_missing_sensors(self):
         self.publish(temperature_sensors_c={'mctrl': 48, 'pcie': 66, 'vram_ch_0': 78})
         device = DeviceTelemetry(index=0, temperature_sensors_c={'mctrl': 0})
@@ -89,7 +106,7 @@ class HostFeedTests(unittest.TestCase):
         self.card.pmu_state['fail'] = 'denied'
         self.assertEqual(drm.intel_counter_status(self.card, device), '')
 
-    def test_privileged_device_memory_does_not_become_a_client_sum(self):
+    def test_driver_device_memory_does_not_become_a_client_sum(self):
         self.publish(mem_total=1000, mem_used=0,
                      metric_sources={'mem_total': XE_TOTAL, 'mem_used': XE_USED})
         device = DeviceTelemetry(index=0, mem_total=2048, mem_used=500,
@@ -100,12 +117,20 @@ class HostFeedTests(unittest.TestCase):
         self.assertNotIn('visible', device.memory_note)
         self.assertNotIn('memory_query', device.metric_status)
 
-    def test_native_privileged_memory_keeps_precedence(self):
+    def test_native_driver_memory_keeps_precedence(self):
         self.publish(mem_total=1000, mem_used=700, metric_sources={'mem_total': XE_TOTAL, 'mem_used': XE_USED})
         device = DeviceTelemetry(index=0, mem_total=1000, mem_used=500,
                                  metric_sources={'mem_total': XE_TOTAL, 'mem_used': XE_USED})
         self.reader.apply(self.card, device)
         self.assertEqual(device.mem_used, 500)
+
+    def test_older_reader_memory_source_remains_compatible(self):
+        self.publish(mem_total=1000, mem_used=700,
+                     metric_sources={'mem_total': XE_TOTAL, 'mem_used': 'Xe query (privileged driver estimate)'})
+        device = DeviceTelemetry(index=0, mem_total=2048, mem_used=500,
+                                 metric_sources={'mem_total': PCI_TOTAL, 'mem_used': CLIENT_USED})
+        self.reader.apply(self.card, device)
+        self.assertEqual((device.mem_total, device.mem_used), (1000, 700))
 
     def test_rate_families_are_not_spliced_between_sources(self):
         self.publish(mem_read_bps=20, mem_write_bps=30)

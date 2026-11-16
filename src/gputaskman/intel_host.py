@@ -18,7 +18,8 @@ DIRECTORY = Path('/run/gputaskman')
 MAX_BYTES = 65536
 MAX_AGE = 6.0
 XE_TOTAL = 'Xe query (driver-reported usable VRAM)'
-XE_USED = 'Xe query (privileged driver estimate)'
+XE_USED = 'Xe query (driver estimate)'
+XE_USED_SOURCES = (XE_USED, 'Xe query (privileged driver estimate)')  # older readers
 CLIENT_USED = 'visible DRM clients (estimated)'
 PCI_TOTAL = 'PCI window (estimated)'
 MEMORY = ('mem_read_bps', 'mem_write_bps', 'mem_bandwidth_max_bps', 'mem_bandwidth_pct')
@@ -133,7 +134,7 @@ class HostDeviceFeed:
                         or any(not isinstance(k, str) or not isinstance(v, str) or len(v) > 2048
                                for k, v in value.items())):
                     raise ValueError(f'invalid host {key}')
-            for key in ('util_kind', 'video_kind', 'power_kind'):
+            for key in ('util_kind', 'video_kind', 'power_kind', 'temp_kind'):
                 value = device.get(key, '')
                 if not isinstance(value, str) or len(value) > 256:
                     raise ValueError(f'invalid host {key}')
@@ -194,8 +195,9 @@ class HostDeviceFeed:
         for field in SCALARS:
             if getattr(device, field) is None and host.get(field) is not None:
                 put(field, host[field])
-                if field == 'power_w':
-                    device.power_kind = host.get('power_kind', '')
+                kind = {'power_w': 'power_kind', 'temp': 'temp_kind'}.get(field)
+                if kind:
+                    setattr(device, kind, host.get(kind, ''))
         for field, kind in (('util_gpu', 'util_kind'), ('video', 'video_kind')):
             if host.get(field) is not None and (getattr(device, field) is None or
                     (getattr(device, kind) and not host.get(kind))):
@@ -215,8 +217,8 @@ class HostDeviceFeed:
         host_total = host.get('mem_total')
         host_query = host_total is not None and host_total > 0 and sources.get('mem_total') == XE_TOTAL
         host_used = host.get('mem_used')
-        use_host_used = (host_query and host_used is not None and sources.get('mem_used') == XE_USED
-                         and device.metric_sources.get('mem_used') != XE_USED)
+        use_host_used = (host_query and host_used is not None and sources.get('mem_used') in XE_USED_SOURCES
+                         and device.metric_sources.get('mem_used') not in XE_USED_SOURCES)
         use_host_total = host_query and (device.mem_total is None or device.metric_sources.get('mem_total') != XE_TOTAL)
         if use_host_used or use_host_total:
             put('mem_total', host_total)
@@ -224,7 +226,7 @@ class HostDeviceFeed:
             if use_host_used:
                 put('mem_used', host_used)
                 device.memory_note = ('Host Xe query: driver-reported usable VRAM; used VRAM is the '
-                                      "privileged driver's device-wide estimate from the host reader.")
+                                      "driver's device-wide estimate from the host reader.")
             else:
                 device.memory_note = ('Host Xe query: driver-reported usable VRAM; used VRAM remains the visible '
                                       "clients' resident sum, which can overlap and omit inaccessible clients.")

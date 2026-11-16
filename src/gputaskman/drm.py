@@ -610,11 +610,11 @@ def read_device(card: DrmCard, index: int) -> DeviceTelemetry:
                 if used is not None:
                     dev.mem_used = used
                     dev.metric_sources['mem_used'] = XE_USED
-                    dev.memory_note += "used VRAM is the driver's privileged device-wide estimate."
+                    dev.memory_note += "used VRAM is the driver's device-wide estimate."
                 else:
                     dev.memory_note += ("used VRAM is the visible clients' resident sum (shared buffers may "
-                                        "double-count; uninspectable clients are missing). Device-wide used "
-                                        "accounting requires CAP_PERFMON or CAP_SYS_ADMIN.")
+                                        "double-count; uninspectable clients are missing). The device query "
+                                        "did not supply an unambiguous used-memory reading.")
             if dev.util_gpu is None and card.client_util is not None:
                 dev.util_gpu, dev.util_kind = card.client_util, "visible DRM clients (estimated)"
             if dev.video is None and card.client_video is not None:

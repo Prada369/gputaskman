@@ -275,13 +275,27 @@ class XeQueryTests(unittest.TestCase):
             struct.pack("=HHI4Q6Q", cls, instance, 4096, total, used, total, used, *([0] * 6))
             for cls, instance, total, used in regions)
 
-    def test_vram_query_ignores_system_ram_and_hides_unprivileged_zero(self):
-        provider = self.provider()
-        data = self.memory_data((0, 0, 64 * GiB, 10 * GiB), (1, 1, 31 * GiB, 0))
-        with patch.object(provider, "query", return_value=data), patch("gputaskman.xe.perfmon_capable", return_value=False):
-            self.assertEqual(provider.memory(), (31 * GiB, None))
-        with patch.object(provider, "query", return_value=data), patch("gputaskman.xe.perfmon_capable", return_value=True):
-            self.assertEqual(provider.memory(), (31 * GiB, 0))
+    def test_driver_used_bytes_survive_without_capabilities_on_old_and_new_kernels(self):
+        for release in ("6.17.0", "6.18.0-generic", "7.0.0-43-generic", "custom"):
+            with self.subTest(release=release), patch("gputaskman.xe.platform.release", return_value=release):
+                provider = self.provider()
+                data = self.memory_data((0, 0, 64 * GiB, 10 * GiB), (1, 1, 31 * GiB, 4 * GiB))
+                with patch.object(provider, "query", return_value=data):
+                    self.assertEqual(provider.memory(), (31 * GiB, 4 * GiB))
+
+    def test_zero_is_unknown_on_legacy_or_unrecognized_kernels(self):
+        for release in ("6.17.9", "6.8.0-52-generic", "6.18.0-rc1", "custom", ""):
+            with self.subTest(release=release), patch("gputaskman.xe.platform.release", return_value=release):
+                provider = self.provider()
+                with patch.object(provider, "query", return_value=self.memory_data((1, 1, GiB, 0))):
+                    self.assertEqual(provider.memory(), (GiB, None))
+
+    def test_zero_stays_measured_on_kernels_without_capability_filtering(self):
+        for release in ("6.18.0", "6.18.12-generic", "7.0.0-43-generic"):
+            with self.subTest(release=release), patch("gputaskman.xe.platform.release", return_value=release):
+                provider = self.provider()
+                with patch.object(provider, "query", return_value=self.memory_data((1, 1, GiB, 0))):
+                    self.assertEqual(provider.memory(), (GiB, 0))
 
     def test_invalid_region_layout_and_duplicate_ids_remain_unknown(self):
         provider = self.provider()

@@ -7,6 +7,7 @@ from functools import lru_cache
 from contextlib import contextmanager, ExitStack
 from dataclasses import asdict
 import math
+from decimal import Decimal, ROUND_HALF_UP, localcontext
 from pathlib import Path, PurePath
 import re
 import shlex
@@ -48,16 +49,37 @@ READING_TITLES = {"mem_total": "Usable VRAM", "mem_used": "Used VRAM", "mem_rese
     "enc": "Encoder load", "dec": "Decoder load", "pstate": "P-state", "compute_cap": "CUDA capability"}
 
 
+def reading_caption(device, key):
+    if key == "temp" and device.get("temp_kind"):
+        return f"Temperature ({device['temp_kind']})"
+    if key == "power_w" and device.get("power_kind") not in (None, "", "Board"):
+        return f"Power ({device['power_kind']})"
+    title = READING_TITLES[key]
+    if key in ("util_gpu", "video") and device.get("util_kind" if key == "util_gpu" else "video_kind"):
+        title += " (estimated)"
+    return title
+
+
+def reading_source(device, key):
+    source = (device.get("metric_sources") or {}).get(key) or device.get("source") or "Device counter"
+    kind = {"temp": "temp_kind", "power_w": "power_kind", "util_gpu": "util_kind", "video": "video_kind"}.get(key)
+    detail = device.get(kind) if kind else None
+    if detail and detail not in source:
+        source += " · " + detail
+    return source
+
+
 def device_readings(snapshot):
     """Available measurements and explained gaps; no irrelevant vendor placeholders."""
     nv, adapter = snapshot.get("device") or {}, snapshot.get("adapter") or {}
     intel = adapter.get("vendor_id") == 0x8086 or nv.get("source") == "Intel sysfs"
     skip = {"util_mem", "enc", "dec", "pstate", "compute_cap", "fan"} if intel else set()
     rows, unavailable = {}, {}
-    statuses, sources = nv.get("metric_status") or {}, nv.get("metric_sources") or {}
+    statuses = nv.get("metric_status") or {}
     for key, title in READING_TITLES.items():
         if key in skip:
             continue
+        title = reading_caption(nv, key)
         value = nv.get(key)
         if value is None or value == "":
             # Optional fields with no provider have no useful empty row.
@@ -82,9 +104,7 @@ def device_readings(snapshot):
             text = metric(value, "%", 1)
         else:
             text = str(value)
-        if key == "util_gpu" and nv.get("util_kind"):
-            text += " (estimated)"
-        rows[title] = (text, sources.get(key) or nv.get("source") or "Device counter")
+        rows[title] = (text, reading_source(nv, key))
     for key, value in (nv.get("temperature_sensors_c") or {}).items():
         rows["Sensor " + key] = (metric(value, "°C"), "Intel hwmon sensor")
     if snapshot.get("shared_used") is not None:
@@ -95,6 +115,11 @@ def device_readings(snapshot):
 def metric(value, unit="", precision=0):
     if value is None or not isinstance(value, (int, float)) or not math.isfinite(value):
         return "n/a"
+    if unit == "%" and precision == 1:
+        decimal = Decimal(str(value))
+        with localcontext() as context:
+            context.prec = max(context.prec, decimal.adjusted() + 3)
+            value = decimal.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
     return f"{value:,.{precision}f}{unit}"
 
 

@@ -17,12 +17,15 @@ import gi
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 gi.require_version("GdkPixbuf", "2.0")
-gi.require_version("AyatanaAppIndicator3", "0.1")
-from gi.repository import AyatanaAppIndicator3 as Indicator
+try:
+    gi.require_version("AyatanaAppIndicator3", "0.1")
+    from gi.repository import AyatanaAppIndicator3 as Indicator
+except (ValueError, ImportError):
+    Indicator = None  # The window still works without optional desktop tray support.
 from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from gputaskman.widget import device_readings, gpu_identity, memory, metric, model_cards
+from gputaskman.widget import device_readings, gpu_identity, memory, metric, model_cards, reading_caption, reading_source
 from gputaskman.widget_controls import METRIC_SETTINGS, Preferences, alarm_state, fan_command, tuning_command, vram_panel_label
 
 CSS = b"""
@@ -147,8 +150,9 @@ class GpuIcon(Gtk.DrawingArea):
 class GpuWidget(Gtk.Application):
     def __init__(self, command, *, start_hidden=False):
         super().__init__(application_id="local.gputaskman.Widget")
-        self.command, self.start_hidden = command, start_hidden
+        self.command, self.start_hidden = command, start_hidden and Indicator is not None
         self.worker = None
+        self.indicator = None
         self.stopping = False
         self.last_update = None
         self.started_at = time.monotonic()
@@ -197,8 +201,8 @@ class GpuWidget(Gtk.Application):
         self.window.set_decorated(True)
         self.window.set_default_size(510, 820)
         self.window.set_icon_name("video-display")
-        self.window.set_skip_taskbar_hint(True)
-        self.window.set_skip_pager_hint(True)
+        self.window.set_skip_taskbar_hint(Indicator is not None)
+        self.window.set_skip_pager_hint(Indicator is not None)
         self.window.stick()
         self.window.connect("delete-event", self.on_close)
         self.window.connect("window-state-event", self.on_window_state)
@@ -746,6 +750,9 @@ class GpuWidget(Gtk.Application):
         quit_item.connect("activate", lambda _item: self.stop())
         self.menu.append(quit_item)
         self.menu.show_all()
+        self.indicator = None
+        if Indicator is None:
+            return
         self.indicator = Indicator.Indicator.new("gputaskman-widget", "video-display-symbolic",
                                                  Indicator.IndicatorCategory.HARDWARE)
         self.indicator.set_title("GPU Snapshot")
@@ -803,6 +810,8 @@ class GpuWidget(Gtk.Application):
             self.sensor_helper_status.set_text("Could not open GPU Sensors: " + error.message)
 
     def update_tray_memory(self, snapshot):
+        if self.indicator is None:
+            return
         nv = snapshot.get("device") or {}
         source = (nv.get("metric_sources") or {}).get("mem_used", "")
         estimated = "estimated" in source.lower() or "visible" in source.lower()
@@ -810,7 +819,7 @@ class GpuWidget(Gtk.Application):
                                                 estimated=estimated), "VRAM ▰▰▰▰▰▰▰▰ 100%")
 
     def on_window_state(self, _window, event):
-        if event.new_window_state & Gdk.WindowState.ICONIFIED:
+        if self.indicator is not None and event.new_window_state & Gdk.WindowState.ICONIFIED:
             self.hide_window()
         return False
 
@@ -834,6 +843,11 @@ class GpuWidget(Gtk.Application):
             if raw is None:
                 return
             snapshot = json.loads(raw)
+            if not isinstance(snapshot, dict):
+                raise ValueError("Expected a snapshot object from the GPU reader")
+            if "gpus" in snapshot and (not isinstance(snapshot["gpus"], list)
+                                       or any(not isinstance(gpu, dict) for gpu in snapshot["gpus"])):
+                raise ValueError("Expected a list of GPU snapshot objects")
             if snapshot.get("error"):
                 self.set_unavailable(snapshot["error"])
             else:
@@ -973,7 +987,7 @@ class GpuWidget(Gtk.Application):
         self.memory_source.set_tooltip_text(note or source)
         self.vram_text.set_tooltip_text(note or source)
         self.vram_bar.set_tooltip_text("Unknown — no memory reading" if used is None else note or source)
-        formats = {"util_gpu": ("%", 0), "temp": ("°C", 0), "power_w": (" W", 0),
+        formats = {"util_gpu": ("%", 1), "temp": ("°C", 0), "power_w": (" W", 0),
                    "sm_clock": (" MHz", 0), "fan_rpm": (" rpm", 0), "vram_temp": ("°C", 0)}
         for key, (value_label, caption, card) in self.metrics.items():
             value_label.set_text(metric(nv.get(key), *formats[key]))
@@ -981,11 +995,9 @@ class GpuWidget(Gtk.Application):
             if nv.get(key) is None:
                 low = (reason or "").lower()
                 value_label.set_text("Locked" if "denied" in low or "privilege" in low else "Unknown")
-            provenance = sources.get(key) or (nv.get("util_kind") if key == "util_gpu" else None)
-            explanation = reason if nv.get(key) is None else provenance or nv.get("source")
+            explanation = reason if nv.get(key) is None else reading_source(nv, key)
             card.set_tooltip_text((explanation or "Device reading") + "\nClick to set its color and alarm light.")
-            if key == "util_gpu":
-                caption.set_text("Load (estimated)" if nv.get("util_kind") else "GPU load")
+            caption.set_text(reading_caption(nv, key))
         readings = {key: nv.get(key) for key in self.metrics}
         readings["vram_pct"] = used / total * 100 if used is not None and total else None
         self.update_lights(readings)
@@ -1117,7 +1129,8 @@ class GpuWidget(Gtk.Application):
         suffix = "Last snapshot retained; readings are not live." if self.last_snapshot else "Waiting for the first reading."
         self.notice.set_text(reason + " " + suffix)
         self.notice.show()
-        self.indicator.set_label("VRAM unavailable", "VRAM ▰▰▰▰▰▰▰▰ 100%")
+        if self.indicator is not None:
+            self.indicator.set_label("VRAM unavailable", "VRAM ▰▰▰▰▰▰▰▰ 100%")
         self.tray_summary.set_label("Readings unavailable — " + reason[:100])
         self.tray_models.set_label("Model information is not live")
 
@@ -1140,7 +1153,8 @@ class GpuWidget(Gtk.Application):
         if self.tuning_process is not None:
             self.tuning_process.send_signal(signal.SIGTERM)
         self.hide_window()
-        self.indicator.set_status(Indicator.IndicatorStatus.PASSIVE)
+        if self.indicator is not None:
+            self.indicator.set_status(Indicator.IndicatorStatus.PASSIVE)
         if self.worker is None:
             self.quit()
         else:

@@ -8,6 +8,7 @@ from __future__ import annotations
 import ctypes
 import errno
 import os
+import platform
 import re
 import struct
 from pathlib import Path
@@ -19,14 +20,16 @@ REGION = struct.Struct("=HHI4Q6Q")
 CLASS_NAMES = {0: "rcs", 1: "bcs", 2: "vcs", 3: "vecs", 4: "ccs"}
 
 
-def perfmon_capable(status: str = "/proc/self/status") -> bool:
-    """The memory query silently returns used=0 without either effective capability."""
-    try:
-        text = Path(status).read_text()
-        bits = int(re.search(r"^CapEff:\s*([0-9a-fA-F]+)$", text, re.M)[1], 16)
-        return bool(bits & ((1 << 38) | (1 << 21)))  # CAP_PERFMON / CAP_SYS_ADMIN
-    except (OSError, ValueError, TypeError):
-        return False
+def reports_used_zero(release: str) -> bool:
+    """Upstream Linux 6.18 removed the memory query's capability filtering.
+
+    Older/custom kernels may censor used bytes to zero. Capability bits from
+    /proc/self/status cannot prove access in the initial user namespace.
+    Unrecognized releases and prereleases stay conservative.
+    """
+    match = re.match(r"^(\d+)\.(\d+)\.\d+(?:[-+.]|$)", release)
+    return bool(match and "-rc" not in release
+                and tuple(map(int, match.groups())) >= (6, 18))
 
 
 class XeDevice:
@@ -40,6 +43,7 @@ class XeDevice:
         self.query_error = ""
         self.pmu_error = ""
         self._open_attempted = False
+        self._reports_used_zero = reports_used_zero(platform.release())
         self._perf: dict[str, tuple[int, int]] = {}
         self._before: dict[str, tuple[int, int]] = {}
         self._pmu_attempted = False
@@ -127,9 +131,10 @@ class XeDevice:
         if not regions:
             return None, None
         total = sum(region[0] for region in regions)
-        # Without the capability even an apparently valid zero is deliberately hidden.
-        used = sum(region[1] for region in regions) if perfmon_capable() else None
-        return total, used
+        used = sum(region[1] for region in regions)
+        # A positive value proves the driver supplied accounting. A legacy zero
+        # could be permission-filtered; never infer access from namespace caps.
+        return total, used if used or self._reports_used_zero else None
 
     def _spec(self) -> tuple[int, int, dict[str, tuple[int, int]]] | None:
         try:

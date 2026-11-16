@@ -52,6 +52,20 @@ class WidgetDataTests(unittest.TestCase):
         self.assertEqual(memory(None), "n/a")
         self.assertEqual(memory(0), "0.00 GiB")
 
+    def test_fallback_temperature_power_and_visible_load_keep_their_provenance(self):
+        snapshot = {'device': {'source': 'Intel sysfs', 'temp': 60, 'temp_kind': 'CPU package',
+                    'power_w': 8, 'power_kind': 'RAPL uncore', 'util_gpu': 74.25,
+                    'util_kind': 'visible DRM clients (estimated)', 'video': 0,
+                    'video_kind': 'visible DRM clients (estimated)'}}
+        rows, _ = device_readings(snapshot)
+        self.assertNotIn('GPU temperature', rows)
+        self.assertNotIn('Board power', rows)
+        self.assertIn('CPU package', rows['Temperature (CPU package)'][1])
+        self.assertIn('RAPL uncore', rows['Power (RAPL uncore)'][1])
+        self.assertEqual(rows['GPU load (estimated)'][0], '74.3%')
+        self.assertIn('visible DRM clients', rows['GPU load (estimated)'][1])
+        self.assertEqual(rows['Video engine load (estimated)'][0], '0.0%')
+
     def test_installed_candidates_do_not_become_active_models(self):
         snapshot = {"processes": [{"kind": "app", "installed_models": [{"path": "/models/example.gguf"}]}]}
         self.assertEqual(model_cards(snapshot), [])

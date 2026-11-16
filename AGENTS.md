@@ -72,7 +72,9 @@ The backend is chosen at import time in `collector.py`: `BACKEND` is `wddm` on W
 native Linux, `wsl` under WSL, and `metal` on macOS. On native Linux, `Collector.backend` becomes `drm`
 when the selected GPU is an amdgpu or Intel i915/xe card (processes from DRM fdinfo). Xe adds the
 read-only device-query/PMU provider in `xe.py`: usable VRAM is driver-reported, and its used-memory
-estimate requires effective CAP_PERFMON or CAP_SYS_ADMIN (an unprivileged zero is unknown). Otherwise
+estimate accepts positive driver values without a userspace capability gate. Upstream Linux 6.18+
+also reports an unfiltered zero; on older, prerelease or unrecognized kernels zero remains unknown
+(capability bits in a user namespace cannot prove access). Custom/backported behavior is unvalidated. Otherwise
 Intel VRAM used is a visible-client sum and total a PCI window estimate. Every case carries its
 `memory_note`; a total of 0 is unknown. Xe's fallback load covers visible clients only and must retain
 `util_kind`/`video_kind` labels. Partial scans or incomplete client intervals cannot supply fallback load. One-shot
