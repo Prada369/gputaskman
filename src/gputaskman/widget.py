@@ -69,6 +69,32 @@ def reading_source(device, key):
     return source
 
 
+class FanReadings:
+    """Separate raw driver RPM from timestamped history, without replacing zeros."""
+    def __init__(self):
+        self.last_nonzero = {}
+
+    def record(self, key, device, now):
+        rpm = device.get("fan_rpm")
+        if isinstance(rpm, (int, float)) and math.isfinite(rpm) and rpm > 0:
+            self.last_nonzero[key] = (rpm, now)
+
+    def present(self, key, device, now):
+        rpm = device.get("fan_rpm")
+        intel = device.get("driver_model") == "xe" or device.get("source") == "Intel sysfs"
+        text = metric(rpm, " rpm")
+        note = ""
+        if intel and rpm == 0:
+            text = "0 reported"
+            note = ("The GPU driver reported 0 RPM. This does not verify that the fan stopped; "
+                    "Xe calculates RPM from a sampling interval shared by sensor readers.")
+            if key in self.last_nonzero:
+                previous, taken = self.last_nonzero[key]
+                age = max(0, int(now - taken))
+                note += f" Last non-zero report: {metric(previous, ' rpm')}, {age}s ago (historical)."
+        return text, note
+
+
 def device_readings(snapshot):
     """Available measurements and explained gaps; no irrelevant vendor placeholders."""
     nv, adapter = snapshot.get("device") or {}, snapshot.get("adapter") or {}

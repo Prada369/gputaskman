@@ -709,6 +709,8 @@ preferences are saved atomically per GPU in `~/.config/gputaskman/widget.json`
 **Fan control** offers Automatic, Custom minimum, and Full speed on Intel Xe
 drivers. The title-bar **Fan controls** button and **Fan speed settings…** button
 open a separate control dialog; the Fan reading's settings also include a shortcut.
+The fan and power dialogs open beside the widget, stay within its monitor's work
+area, and follow it when moved. Their position is recalculated each time they open.
 Actual adjustment requires
 the patched `pwm1_enable` and fan-curve interface. Custom minimum
 sets a 30–100% PWM floor while retaining a thermal ramp to 100% at 85°C. Moving
@@ -717,10 +719,27 @@ existing `/usr/local/bin/xe-fan-curve` helper via polkit, bound to the selected 
 address. The widget does not install a helper, change authorization policy, rebuild
 a kernel, or persist fan changes at boot. The applied curve remains until changed
 or reset by the driver. On this B65 with the stock `7.0.0-43-generic` Xe module,
-fan RPM is readable but the PWM interface is absent: controls correctly remain
-disabled with a reason. Actual fan changes through this widget are not hardware
+fan RPM is readable but the PWM interface is absent: the panel shows RPM and a
+reason instead of unusable adjustment controls. CPU fan settings are separate in
+BIOS. Fan adjustments require fresh GPU readings. Actual fan changes through this widget are not hardware
 validated; command generation, device selection, monotonic ramps and unavailable
 driver behavior have synthetic tests.
+
+**Fan RPM sampling:** Xe computes `fan1_input` from an interval shared by all
+readers; concurrent monitoring can produce short/zero reports. The local widget
+launcher sets `GPUTASKMAN_FAN_FEED` to the existing thermal watcher's JSONL file,
+so the widget reuses that GPU sample instead of reading the tachometer again.
+This optional handoff requires a regular, non-symlink file owned by the current
+user and not writable by group/others, matching boot ID and full GPU PCI address,
+and a timestamp no more than six seconds old. Reads are bounded to the last 8 KiB.
+Missing, stale or invalid feeds fall back to the native sensor; no watcher is
+started automatically. Raw zero remains zero in JSON. The widget labels Intel
+zero reports as `0 reported` and shows any last non-zero value separately with
+its age as history, rather than presenting it as current RPM. The sensor's exact
+source is available in `metric_sources.fan_rpm` and the reading tooltip.
+On this B65/7.0.0-43 host, six live checks matched the same-GPU thermal watcher
+at 1,277–1,731 RPM. This validates the shared handoff, not independently measured
+physical fan speed. No kernel or fan settings were changed.
 
 **Power & clocks…** exposes the installed Xe tuning helper's supported controls:
 power cap, min/max GPU frequency requests and Base/Power saving profile. On this
@@ -730,6 +749,9 @@ product's reference rating, not the hardware's critical limit. Only **Apply powe
 & clocks** calls the existing privileged helper, bound to the selected PCI address;
 editing fields and telemetry collection never apply settings. Requests are range
 checked, and clock writes are ordered to avoid crossing the existing floor/ceiling.
+Apply sends only changed settings; unchanged settings need no authorization or
+hardware writes. After the helper returns, the dialog reads the selected GPU's
+settings again and reports confirmation only when they match the request.
 The dialog distinguishes frequency requests from actual measured operating clocks.
 Driver control discovery and GUI editing were validated on this host; no power,
 clock, or profile changes were applied as part of widget testing.
@@ -1258,6 +1280,7 @@ Identification is designed to stay cheap. Measured on one Windows machine:
 
 | Probe | Cost | Used |
 |---|---|---|
+| Optional shared GPU fan sample | 0.055 ms median, 0.245 ms max across 30 warm file reads/validations on this B65 host, 2026-11-15 | Selected GPU, once per refresh when `GPUTASKMAN_FAN_FEED` is set; at most 8 KiB, with ownership/boot/PCI/freshness validation. Replaces one native tachometer read; no hardware writes |
 | Desktop tuning-control discovery (selected PCI frequency requests, power cap, profiles) | 0.288 ms median, 1.038 ms max across 30 warm reads on this B65, stock Xe on Linux 7.0.0-43-generic, 2026-11-15 | Read-only, once per widget refresh. No setting changes during discovery |
 | Desktop fan-control availability (selected PCI hwmon, read-only) | 0.083 ms median, 0.336 ms max across 30 warm reads on this B65, stock Xe on Linux 7.0.0-43-generic, 2026-11-15 | Once per widget refresh; reads only the selected GPU's fan mode/interface presence. No control writes during sampling |
 | Desktop widget PCI identity (four sysfs IDs and `lspci -Dmm -s` for the selected PCI address) | 5.92 ms median, 6.71 ms max across 30 warm reads on Intel Battlemage G31 (`8086:e222`), Linux 7.0.0-43-generic, 2026-11-15 | Once per selected PCI address in the optional widget worker, cached for its lifetime. One-second subprocess timeout; no driver changes or link-status substitutions |

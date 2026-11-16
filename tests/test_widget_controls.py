@@ -82,6 +82,21 @@ class TuningTests(unittest.TestCase):
         command = tuning_command(state, clock_min=400, clock_max=1500)
         self.assertLess(command.index('--clk-min'), command.index('--clk-max'))
 
+    def test_power_only_change_does_not_rewrite_clock_requests_or_profile(self):
+        state = dict(self.state, profile='base')
+        command = tuning_command(state, clock_min=400, clock_max=2400, power_w=190, profile='base')
+        self.assertEqual(command[5:], ['--power-w', '190'])
+
+    def test_unchanged_settings_need_no_privileged_command(self):
+        state = dict(self.state, profile='base')
+        self.assertEqual(tuning_command(state, clock_min=400, clock_max=2400,
+                                       power_w=200, profile='base'), [])
+
+    def test_unchanged_invalid_power_still_cannot_bypass_validation(self):
+        state = dict(self.state, power_w=250)
+        with self.assertRaises(ValueError):
+            tuning_command(state, clock_min=400, clock_max=2400, power_w=250, power_ceiling=200)
+
     def test_read_only_tuning_discovery_reads_only_matched_device(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); freq = root / self.state['pci'] / 'tile0/gt0/freq0'

@@ -25,8 +25,8 @@ except (ValueError, ImportError):
 from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from gputaskman.widget import device_readings, gpu_identity, memory, metric, model_cards, reading_caption, reading_source
-from gputaskman.widget_controls import METRIC_SETTINGS, Preferences, alarm_state, fan_command, tuning_command, vram_panel_label
+from gputaskman.widget import FanReadings, device_readings, gpu_identity, memory, metric, model_cards, reading_caption, reading_source
+from gputaskman.widget_controls import METRIC_SETTINGS, Preferences, alarm_state, fan_command, tuning_command, tuning_state, vram_panel_label
 
 CSS = b"""
 window.snapshot { background-color: @theme_bg_color; color: @theme_fg_color; }
@@ -161,6 +161,7 @@ class GpuWidget(Gtk.Application):
         self.selected_gpu = None
         self.gpu_rows = {}
         self.histories = {}
+        self.fan_readings = FanReadings()
         self.model_signature = None
         self.detail_values = {}
         self.detail_keys = {}
@@ -173,6 +174,7 @@ class GpuWidget(Gtk.Application):
         self.latest_values = {}
         self.fan_process = None
         self.tuning_process = None
+        self.tuning_request = None
         self.tuning_current_gpu = None
         self.power_ceiling = 1
 
@@ -206,6 +208,7 @@ class GpuWidget(Gtk.Application):
         self.window.stick()
         self.window.connect("delete-event", self.on_close)
         self.window.connect("window-state-event", self.on_window_state)
+        self.window.connect("configure-event", self.on_widget_configured)
         display = Gdk.Display.get_default()
         monitor = display.get_primary_monitor() or display.get_monitor(0)
         work = monitor.get_workarea()
@@ -327,6 +330,9 @@ class GpuWidget(Gtk.Application):
             self.metrics[key] = (value, caption, card)
             metrics.attach(card, index % 3, index // 3, 1, 1)
         content.pack_start(metrics, False, False, 0)
+        self.fan_reading_note = label("", "small", True)
+        self.fan_reading_note.set_no_show_all(True)
+        content.pack_start(self.fan_reading_note, False, False, 0)
         self.build_fan_controls(content)
         self.build_tuning_controls()
 
@@ -411,6 +417,8 @@ class GpuWidget(Gtk.Application):
         self.fan_dialog = Gtk.Dialog(title="Fan speed controls", transient_for=self.window, modal=False)
         self.fan_dialog.get_style_context().add_class("snapshot")
         self.fan_dialog.set_default_size(460, -1)
+        self.fan_dialog.set_position(Gtk.WindowPosition.NONE)
+        self.fan_dialog.connect("configure-event", self.on_control_configured)
         self.fan_dialog.add_button("Close", Gtk.ResponseType.CLOSE)
         self.fan_dialog.connect("response", lambda dialog, _response: dialog.hide())
         self.fan_dialog.connect("delete-event", lambda dialog, _event: (dialog.hide(), True)[1])
@@ -418,6 +426,9 @@ class GpuWidget(Gtk.Application):
         panel.set_border_width(14)
         self.fan_status = label("Checking fan-control support…", "muted", True)
         panel.pack_start(self.fan_status, False, False, 0)
+        self.fan_adjustments = box(spacing=9)
+        self.fan_adjustments.set_no_show_all(True)
+        panel.pack_start(self.fan_adjustments, False, False, 0)
         mode_row = box(False, 10)
         mode_row.pack_start(label("Mode", "section"), True, True, 0)
         self.fan_mode = Gtk.ComboBoxText()
@@ -426,20 +437,20 @@ class GpuWidget(Gtk.Application):
         self.fan_mode.set_active_id("automatic")
         self.fan_mode.connect("changed", lambda _combo: self.update_fan_sensitivity())
         mode_row.pack_end(self.fan_mode, False, False, 0)
-        panel.pack_start(mode_row, False, False, 0)
-        panel.pack_start(label("Minimum fan speed", "section"), False, False, 0)
+        self.fan_adjustments.pack_start(mode_row, False, False, 0)
+        self.fan_adjustments.pack_start(label("Minimum fan speed", "section"), False, False, 0)
         self.fan_slider = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 30, 100, 1)
         self.fan_slider.set_value(50)
         self.fan_slider.set_value_pos(Gtk.PositionType.RIGHT)
         self.fan_slider.set_tooltip_text("Minimum PWM duty; actual RPM depends on GPU temperature.")
         self.fan_slider.connect("format-value", lambda _scale, value: f"{value:.0f}%")
-        panel.pack_start(self.fan_slider, False, False, 0)
-        panel.pack_start(label("Custom mode keeps a thermal ramp and reaches full speed at 85°C.", "small", True), False, False, 0)
+        self.fan_adjustments.pack_start(self.fan_slider, False, False, 0)
+        self.fan_adjustments.pack_start(label("Custom mode keeps a thermal ramp and reaches full speed at 85°C.", "small", True), False, False, 0)
         self.fan_apply = Gtk.Button(label="Apply fan setting")
         self.fan_apply.get_style_context().add_class("suggested-action")
         self.fan_apply.set_halign(Gtk.Align.END)
         self.fan_apply.connect("clicked", self.apply_fan_setting)
-        panel.pack_start(self.fan_apply, False, False, 0)
+        self.fan_adjustments.pack_start(self.fan_apply, False, False, 0)
         self.fan_result = label("", "small", True)
         panel.pack_start(self.fan_result, False, False, 0)
         self.fan_expander.add(panel)
@@ -459,7 +470,9 @@ class GpuWidget(Gtk.Application):
         self.update_fan_sensitivity()
 
     def update_fan_sensitivity(self):
-        enabled = self.fan_supported and self.fan_process is None
+        fresh = (self.live.get_text() == "Live" and self.last_update is not None
+                 and time.monotonic() - self.last_update <= 8)
+        enabled = self.fan_supported and fresh and self.fan_process is None
         self.fan_mode.set_sensitive(enabled)
         self.fan_slider.set_sensitive(enabled and self.fan_mode.get_active_id() == "custom")
         self.fan_apply.set_sensitive(enabled)
@@ -467,6 +480,11 @@ class GpuWidget(Gtk.Application):
     def update_fan_controls(self, snapshot):
         state = snapshot.get("fan_control") or {}
         self.fan_supported = bool(state.get("supported")) and Path("/usr/local/bin/xe-fan-curve").is_file()
+        self.fan_dialog.set_title("GPU fan settings — " + gpu_identity(snapshot)["model"])
+        self.fan_adjustments.set_visible(self.fan_supported)
+        if self.fan_supported:
+            for child in self.fan_adjustments.get_children():
+                child.show_all()
         if self.fan_supported:
             self.fan_inline_status.set_text("Fan: " + state.get("mode_name", "available"))
             self.fan_expander.set_label("Fan speed control · " + state.get("mode_name", "available"))
@@ -477,7 +495,10 @@ class GpuWidget(Gtk.Application):
             self.fan_inline_status.set_text("Fan: RPM monitoring only")
             self.fan_expander.set_label("Fan speed control · driver support missing")
             reason = state.get("reason") or "The selected GPU does not expose fan adjustment through the installed Intel fan helper."
-            self.fan_status.set_text(reason + " The speed slider cannot be applied until that driver support is restored.")
+            device = snapshot.get("device") or {}
+            rpm, note = self.fan_readings.present(self.selected_gpu, device, time.monotonic())
+            self.fan_status.set_text("GPU fan speed: " + rpm + ("\n" + note if note else "") + "\n\n" + reason
+                                     + "\n\nCPU fan settings are controlled separately in BIOS.")
         if self.fan_current_gpu != self.selected_gpu:
             self.fan_result.set_text("")
         self.fan_current_gpu = self.selected_gpu
@@ -485,6 +506,9 @@ class GpuWidget(Gtk.Application):
 
     def apply_fan_setting(self, _button):
         if self.fan_process is not None or not self.last_snapshot:
+            return
+        if self.live.get_text() != "Live" or self.last_update is None or time.monotonic() - self.last_update > 8:
+            self.fan_result.set_text("Fresh GPU readings are required before applying settings.")
             return
         try:
             command = fan_command(self.last_snapshot.get("fan_control") or {},
@@ -515,6 +539,8 @@ class GpuWidget(Gtk.Application):
         self.tuning_dialog = Gtk.Dialog(title="Power & clocks", transient_for=self.window, modal=False)
         self.tuning_dialog.get_style_context().add_class("snapshot")
         self.tuning_dialog.set_default_size(460, -1)
+        self.tuning_dialog.set_position(Gtk.WindowPosition.NONE)
+        self.tuning_dialog.connect("configure-event", self.on_control_configured)
         self.tuning_dialog.add_button("Close", Gtk.ResponseType.CLOSE)
         self.tuning_dialog.connect("response", lambda dialog, _response: dialog.hide())
         self.tuning_dialog.connect("delete-event", lambda dialog, _event: (dialog.hide(), True)[1])
@@ -547,8 +573,7 @@ class GpuWidget(Gtk.Application):
     def show_tuning_controls(self):
         if self.last_snapshot:
             self.update_tuning_controls(self.last_snapshot, load=True)
-        self.tuning_dialog.show_all()
-        self.tuning_dialog.present()
+        self.show_control_dialog(self.tuning_dialog)
 
     def update_tuning_controls(self, snapshot, *, load=False):
         state = snapshot.get("tuning") or {}
@@ -594,6 +619,15 @@ class GpuWidget(Gtk.Application):
             command = tuning_command(state, clock_min=self.tuning_min.get_value(), clock_max=self.tuning_max.get_value(),
                 power_w=self.tuning_power.get_value() if state.get("power_w") is not None else None,
                 profile=self.tuning_profile.get_active_id(), power_ceiling=self.power_ceiling)
+            if not command:
+                self.tuning_result.set_text("The driver already reports these settings.")
+                return
+            self.tuning_request = {"pci": state["pci"], "clock_min": self.tuning_min.get_value(),
+                                   "clock_max": self.tuning_max.get_value()}
+            if state.get("power_w") is not None:
+                self.tuning_request["power_w"] = self.tuning_power.get_value()
+            if self.tuning_profile.get_active_id() is not None:
+                self.tuning_request["profile"] = self.tuning_profile.get_active_id()
             self.tuning_process = Gio.Subprocess.new(command, Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE)
             self.tuning_result.set_text("Applying; authorization may be requested…")
             self.update_tuning_controls(self.last_snapshot)
@@ -602,20 +636,31 @@ class GpuWidget(Gtk.Application):
             self.tuning_result.set_text(str(error))
 
     def on_tuning_applied(self, process, result):
+        request = self.tuning_request
+        message = ""
         try:
             _ok, _out, errors = process.communicate_utf8_finish(result)
-            if process.get_successful():
-                self.tuning_result.set_text("Helper completed. Current driver settings refresh above; actual operating clocks can vary with load.")
-            elif process.get_if_exited() and process.get_exit_status() == 126:
-                self.tuning_result.set_text("Authorization cancelled.")
+            if process.get_if_exited() and process.get_exit_status() == 126:
+                message = "Authorization cancelled."
             else:
-                lines = (errors or "Tuning helper returned an error").strip().splitlines()
-                self.tuning_result.set_text(lines[-1] + " Inspect the refreshed settings; some requests may have applied.")
+                current = tuning_state(request["pci"])
+                if self.last_snapshot and (self.last_snapshot.get("tuning") or {}).get("pci") == request["pci"]:
+                    self.last_snapshot["tuning"] = current
+                    self.update_tuning_controls(self.last_snapshot, load=True)
+                if process.get_successful() and all(current.get(key) == value for key, value in request.items()):
+                    message = "Settings confirmed by driver readback. Actual operating clocks vary with load."
+                elif process.get_successful():
+                    message = "The driver did not confirm all requested values. Check the current settings above."
+                else:
+                    lines = (errors or "Tuning helper returned an error").strip().splitlines()
+                    message = lines[-1] + " Check the current settings; some requests may have applied."
         except GLib.Error as error:
-            self.tuning_result.set_text(error.message)
+            message = error.message
         self.tuning_process = None
+        self.tuning_request = None
         if self.last_snapshot:
             self.update_tuning_controls(self.last_snapshot)
+        self.tuning_result.set_text(message)
 
     def edit_metric(self, key, button):
         if self.selected_gpu is None:
@@ -707,8 +752,52 @@ class GpuWidget(Gtk.Application):
 
     def show_fan_controls(self):
         self.fan_expander.set_expanded(True)
-        self.fan_dialog.show_all()
-        self.fan_dialog.present()
+        self.show_control_dialog(self.fan_dialog)
+
+    def show_control_dialog(self, dialog):
+        dialog.show_all()
+        self.position_control_dialog(dialog)
+        dialog.present()
+        # Reposition after GTK and the window manager have allocated decorations.
+        GLib.idle_add(self.position_control_dialog, dialog)
+
+    def position_control_dialog(self, dialog):
+        parent = self.window.get_window()
+        child = dialog.get_window()
+        if parent is None or child is None or not dialog.get_visible():
+            return GLib.SOURCE_REMOVE
+        display = self.window.get_display()
+        work = display.get_monitor_at_window(parent).get_workarea()
+        anchor, frame = parent.get_frame_extents(), child.get_frame_extents()
+        width, height = frame.width, frame.height
+        gap = 12
+        right = anchor.x + anchor.width + gap
+        left = anchor.x - width - gap
+        if right + width <= work.x + work.width:
+            x = right
+        elif left >= work.x:
+            x = left
+        else:
+            x = anchor.x + (anchor.width - width) // 2
+        y = anchor.y + (anchor.height - height) // 2
+        x = max(work.x, min(x, work.x + work.width - width))
+        y = max(work.y, min(y, work.y + work.height - height))
+        dialog.move(x, y)
+        return GLib.SOURCE_REMOVE
+
+    def on_widget_configured(self, _window, _event):
+        for name in ("fan_dialog", "tuning_dialog"):
+            dialog = getattr(self, name, None)
+            if dialog is not None and dialog.get_visible():
+                self.position_control_dialog(dialog)
+        return False
+
+    def on_control_configured(self, dialog, event):
+        size = (event.width, event.height)
+        if getattr(dialog, "_control_size", None) != size:
+            dialog._control_size = size
+            GLib.idle_add(self.position_control_dialog, dialog)
+        return False
 
     def update_lights(self, values):
         self.latest_values = values
@@ -888,6 +977,7 @@ class GpuWidget(Gtk.Application):
         for snapshot in snapshots:
             identity = gpu_identity(snapshot)
             key = identity["id"]
+            self.fan_readings.record(key, snapshot.get("device") or {}, time.monotonic())
             current[key] = snapshot
             history = self.histories.setdefault(key, deque(maxlen=60))
             used, total = snapshot.get("vram_used"), snapshot.get("vram_total")
@@ -924,6 +1014,7 @@ class GpuWidget(Gtk.Application):
             if key not in current:
                 self.gpu_rows.pop(key)[0].destroy()
                 self.histories.pop(key, None)
+                self.fan_readings.last_nonzero.pop(key, None)
         self.gpu_snapshots = current
         if self.selected_gpu not in current:
             self.selected_gpu = next(iter(current))
@@ -998,6 +1089,18 @@ class GpuWidget(Gtk.Application):
             explanation = reason if nv.get(key) is None else reading_source(nv, key)
             card.set_tooltip_text((explanation or "Device reading") + "\nClick to set its color and alarm light.")
             caption.set_text(reading_caption(nv, key))
+        if nv.get("fan_rpm") is not None:
+            fan_text, fan_note = self.fan_readings.present(self.selected_gpu, nv, time.monotonic())
+            self.metrics["fan_rpm"][0].set_text(fan_text)
+            self.metrics["fan_rpm"][1].set_text("Fan (driver report)")
+            if fan_note:
+                self.metrics["fan_rpm"][2].set_tooltip_text(fan_note + "\n" + reading_source(nv, "fan_rpm"))
+                self.fan_reading_note.set_text(fan_note)
+                self.fan_reading_note.show()
+            else:
+                self.fan_reading_note.hide()
+        else:
+            self.fan_reading_note.hide()
         readings = {key: nv.get(key) for key in self.metrics}
         readings["vram_pct"] = used / total * 100 if used is not None and total else None
         self.update_lights(readings)

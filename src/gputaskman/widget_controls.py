@@ -201,19 +201,25 @@ def tuning_command(state, *, clock_min, clock_max, power_w=None, profile=None, p
         raise ValueError("Clock limits must be whole MHz values")
     if not state["clock_low"] <= clock_min <= clock_max <= state["clock_high"]:
         raise ValueError("Clock limits must stay within the GPU's reported range")
+    clocks = [("--clk-max", clock_max, state["clock_max"]),
+              ("--clk-min", clock_min, state["clock_min"])]
     if clock_max < state["clock_min"]:
-        arguments = ["--clk-min", str(int(clock_min)), "--clk-max", str(int(clock_max))]
-    else:
-        arguments = ["--clk-max", str(int(clock_max)), "--clk-min", str(int(clock_min))]
+        clocks.reverse()
+    arguments = [part for flag, wanted, current in clocks if wanted != current
+                 for part in (flag, str(int(wanted)))]
     if power_w is not None:
         ceiling = power_ceiling if power_ceiling is not None else state.get("power_w")
         if (isinstance(power_w, bool) or not isinstance(power_w, (int, float)) or not math.isfinite(power_w)
                 or int(power_w) != power_w or ceiling is None or not 1 <= power_w <= ceiling):
             raise ValueError("Power limit must be within the displayed wattage range")
-        arguments += ["--power-w", str(int(power_w))]
+        if power_w != state.get("power_w"):
+            arguments += ["--power-w", str(int(power_w))]
     if profile is not None:
         if profile not in state.get("profiles", []):
             raise ValueError("The selected power profile is not supported")
-        arguments += ["--profile", profile]
+        if profile != state.get("profile"):
+            arguments += ["--profile", profile]
+    if not arguments:
+        return []
     return ["/usr/bin/pkexec", "/usr/bin/env", f"ARC_GPU_BDF={pci}",
             "/usr/local/bin/xe-gpu-tune", "set", *arguments]

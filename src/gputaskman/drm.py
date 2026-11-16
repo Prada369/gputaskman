@@ -567,8 +567,14 @@ def read_device(card: DrmCard, index: int) -> DeviceTelemetry:
             if power is not None:
                 dev.power_kind = _read(os.path.join(hwmon, "power1_label")) or ""  # amdgpu: "PPT" (package power)
             dev.power_limit_w = _microwatts(os.path.join(hwmon, "power1_cap"))
-        fan_input = _int(os.path.join(hwmon, "fan1_input"))
+        from .fan_feed import read_fan_feed
+
+        fan_sample = read_fan_feed(card.pdev) if card.driver == "xe" else None
+        fan_input = fan_sample["rpm"] if fan_sample is not None else _int(os.path.join(hwmon, "fan1_input"))
         dev.fan_rpm = fan_input
+        if fan_input is not None:
+            dev.metric_sources["fan_rpm"] = (fan_sample["source"] if fan_sample is not None else
+                f"{'Intel' if card.intel else 'AMD'} hwmon tachometer: {os.path.join(hwmon, 'fan1_input')} (driver-reported RPM)")
         fan_max = _int(os.path.join(hwmon, "fan1_max"))
         if fan_input is not None and fan_max is not None and fan_max > 0:
             dev.fan = int(round(100 * fan_input / fan_max))
