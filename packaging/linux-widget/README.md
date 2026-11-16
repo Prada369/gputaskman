@@ -2,7 +2,7 @@
 
 An unofficial, optional GTK desktop companion for gputaskman. It runs separately from the
 cross-platform terminal UI and does not change the upstream app's scope. This bundle is built
-from the `fix/intel-xe-telemetry` fork branch and includes the widget and its Python backend.
+from the `sideproject/linux-widget-package` fork branch and includes the widget and its Python backend.
 
 ## Requirements
 
@@ -60,6 +60,6 @@ change system policy.
 ## Source and status
 
 This is a community side project, not part of the upstream TUI release. Source and updates:
-[Prada369/gputaskman, `fix/intel-xe-telemetry`](https://github.com/Prada369/gputaskman/tree/fix/intel-xe-telemetry/packaging/linux-widget).
+[Prada369/gputaskman, `fix/intel-xe-telemetry`](https://github.com/Prada369/gputaskman/tree/sideproject/linux-widget-package/packaging/linux-widget).
 The widget has been exercised on Ubuntu with an Intel Arc Pro B65; other GPUs and desktop sessions
 may expose different readings or tray behavior.
