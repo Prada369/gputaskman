@@ -23,22 +23,6 @@ CPU-only, NPU-only, and cloud workloads are out of scope.
 > Early, experimental software. Device and process counters are measurements; classifications
 > and GGUF-derived breakdowns are estimates. This does not dump VRAM or enumerate a game's textures.
 
-## Fork and contribution credit
-
-This fork builds on [Scott Hanselman's gputaskman](https://github.com/shanselman/gputaskman)
-and the work of its upstream contributors.
-
-[Jay Ho (@Prada369)](https://github.com/Prada369) contributed Intel Xe per-process memory
-and GPU-cycle accounting ([merged PR #77](https://github.com/shanselman/gputaskman/pull/77)),
-and primary-GT frequency and throttle telemetry
-([merged PR #79](https://github.com/shanselman/gputaskman/pull/79)). He also supplied Intel
-Arc Pro B65 hardware validation.
-
-The Linux desktop widget, top-panel VRAM indicator, configurable metric colours and alarms,
-fan controls, and additional Intel telemetry and tuning work are developed in this fork's
-[`fix/intel-xe-telemetry` branch](https://github.com/Prada369/gputaskman/tree/fix/intel-xe-telemetry).
-These fork features are separate from the two merged upstream contributions above.
-
 ## Install from PyPI
 
 [gputaskman is on PyPI](https://pypi.org/project/gputaskman/). No repository clone is needed:
