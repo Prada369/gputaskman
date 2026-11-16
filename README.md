@@ -1321,6 +1321,18 @@ downloads are bundled in this repository.
 - Data-driven app adapters (settings path plus load/unload log patterns) once a second app needs one.
 - Optional ETW / runtime instrumentation for allocation lifetime and residency detail.
 
+### Windows MCDM compute GPUs
+
+NVIDIA MCDM adapters omitted by DXGI are discovered through NVML alongside TCC adapters.
+Use `gputaskman --list-gpus`, then `gputaskman --gpu N` to select one.
+Device pairing preserves the full PCI domain. Device memory and telemetry come from NVML;
+per-process memory remains unknown when the driver does not supply it.
+
+Live check: Windows ARM64, NVIDIA GB300, driver 621.01, MCDM, PCI 00000009:06:00.0,
+alongside an RTX PRO 4000. Discovery, device memory, utilization, temperature, power,
+and existing compute-process enumeration worked. Per-process VRAM was unavailable.
+No controlled workload was launched for this check.
+
 ## License
 
 [MIT](LICENSE).

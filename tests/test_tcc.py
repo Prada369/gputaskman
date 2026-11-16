@@ -172,11 +172,19 @@ class DiscoveryTests(TccTestCase):
                           found.software, found.pci_address),
                          ("Tesla P40", VENDOR_NVIDIA, "NVIDIA", 24 * GiB, 0, False, (0x0A, 0, 0)))
 
-    def test_only_a_gpu_that_is_in_tcc_mode_now_counts(self):
+    def test_only_a_gpu_in_tcc_or_mcdm_mode_now_counts(self):
         # WDDM, MCDM, an unknown model, a WDDM GPU that will switch to TCC at the next reboot, and the reverse.
         self.api.devices = [device(1, model=0), device(2, model=2), device(3, model=7),
                             device(4, model=0, pending=1), device(5, model=1, pending=0)]
-        self.assertEqual([a.pci_address[0] for a in tcc_adapters([])], [5])
+        self.assertEqual([a.pci_address[0] for a in tcc_adapters([])], [2, 5])
+
+    def test_mcdm_preserves_driver_model_and_pci_domain(self):
+        self.api.devices = [device(6, model=2, bus_id="00000009:06:00.0")]
+        (found,) = tcc_adapters([])
+        self.assertEqual(found.driver_model, "MCDM")
+        self.assertEqual(found.pci_domain, 9)
+        self.assertTrue(found.matches_pci("00000009:06:00.0"))
+        self.assertFalse(found.matches_pci("00000002:06:00.0"))
 
     def test_a_gpu_dxgi_lists_is_never_added_again(self):
         self.api.devices = [device(0x0A), device(0x0B)]
@@ -569,6 +577,15 @@ class CollectorTests(TccTestCase):
     def sample(self, c):
         with patch("gputaskman.collector.BACKEND", "wddm"), patch("gputaskman.collector.sys.platform", "win32"):
             return c.sample()
+
+    def test_mcdm_device_metrics_pair_by_driver_model(self):
+        self.api.devices = [device(0x0A, model=2, used=9 * GiB)]
+        adapter = tcc_adapter()
+        adapter.driver_model = "MCDM"
+        snap = self.sample(self.collector(adapter=adapter))
+        self.assertEqual(snap.nv.driver_model, "MCDM")
+        self.assertEqual(snap.vram_used, 9 * GiB)
+        self.assertIn("MCDM compute-only", snap.counter_status)
 
     def test_a_tcc_gpu_gets_its_memory_and_processes_from_nvml(self):
         self.api.devices = [device(0x0A, used=9 * GiB, processes=[(200, 2 * GiB), (100, 6 * GiB)])]

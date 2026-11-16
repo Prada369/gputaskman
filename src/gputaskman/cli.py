@@ -167,7 +167,7 @@ def main() -> None:
             if isinstance(adapter, TccAdapter):  # its LUID is made up from the PCI identity, so show the address
                 bus, device, function = adapter.pci_address
                 pci = f"{adapter.pci_domain:08x}:" if adapter.pci_domain else ""
-                print(f"{i}: {adapter.name} ({adapter.vendor}, TCC compute-only, "
+                print(f"{i}: {adapter.name} ({adapter.vendor}, {adapter.driver_model} compute-only, "
                       f"PCI {pci}{bus:02x}:{device:02x}.{function:x})")
             else:
                 print(f"{i}: {adapter.name} ({adapter.vendor}, LUID 0x{adapter.luid & 0xffffffffffffffff:016x})")

@@ -1,4 +1,4 @@
-"""NVIDIA GPUs in TCC mode: compute-only, so Windows lists no adapter and publishes no GPU counters for them."""
+"""NVIDIA TCC/MCDM compute GPUs omitted by DXGI, discovered and sampled through NVML."""
 
 from __future__ import annotations
 
@@ -11,17 +11,19 @@ from .nvml import Nvml
 from .pdh import AdapterGpu, ProcGpu
 
 NVML_DRIVER_TCC = 1
+NVML_DRIVER_MCDM = 2
 
 
 class TccAdapter(Adapter):
-    """A TCC-mode NVIDIA GPU, found through NVML because DXGI does not list it. It adds no fields, so --json
+    """A TCC/MCDM NVIDIA GPU, found through NVML because DXGI does not list it. It adds no fields, so --json
     looks the same for every adapter. Its luid is made up from the PCI address, so it is the same on every run
     (`diff` pairs adapters by it)."""
 
     def __init__(self, luid: int, name: str, vendor_id: int, dedicated_vram: int, shared_system: int, software: bool,
-                 pci_address: tuple[int, int, int] | None = None, pci_domain: int = 0) -> None:
+                 pci_address: tuple[int, int, int] | None = None, pci_domain: int = 0, driver_model: str = "TCC") -> None:
         super().__init__(luid, name, vendor_id, dedicated_vram, shared_system, software, pci_address)
         self._pci_domain = pci_domain
+        self.driver_model = driver_model
 
     @property
     def pci_domain(self) -> int:
@@ -66,7 +68,8 @@ def _nvml_call(N, name: str, *args):
 
 def _read_device(N, index: int) -> TccAdapter | None:
     handle = _nvml_call(N, "nvmlDeviceGetHandleByIndex", index)
-    if _nvml_call(N, "nvmlDeviceGetDriverModel", handle)[0] != NVML_DRIVER_TCC:
+    model = _nvml_call(N, "nvmlDeviceGetDriverModel", handle)[0]
+    if model not in (NVML_DRIVER_TCC, NVML_DRIVER_MCDM):
         return None
     identity = _pci_identity(_nvml_call(N, "nvmlDeviceGetPciInfo", handle).busId)
     if identity is None:
@@ -76,7 +79,8 @@ def _read_device(N, index: int) -> TccAdapter | None:
     luid = (1 << 62) | domain << 16 | packed_bdf
     return TccAdapter(luid=luid, name=_text(_nvml_call(N, "nvmlDeviceGetName", handle)),
                       vendor_id=VENDOR_NVIDIA, dedicated_vram=_nvml_call(N, "nvmlDeviceGetMemoryInfo", handle).total,
-                      shared_system=0, software=False, pci_address=bdf, pci_domain=domain)
+                      shared_system=0, software=False, pci_address=bdf, pci_domain=domain,
+                      driver_model="MCDM" if model == NVML_DRIVER_MCDM else "TCC")
 
 
 def _discover() -> list[TccAdapter]:
@@ -122,7 +126,7 @@ def _discover() -> list[TccAdapter]:
     elif failed:
         _discovery_status = "NVML TCC discovery was incomplete; one or more devices could not be read."
     elif found:
-        _discovery_status = f"NVML TCC discovery succeeded; found {len(found)} TCC GPU(s)."
+        _discovery_status = f"NVML TCC discovery succeeded; found {len(found)} TCC/MCDM GPU(s)."
     else:
         _discovery_status = "NVML TCC discovery succeeded; no TCC GPUs found."
     if shutdown_failed:

@@ -194,7 +194,7 @@ def select_nv_device(adapter: Adapter | None, devices: list[NvDevice], gpu_index
             matches = [d for d in devices if d.pci_bus and pci_key(d.pci_bus) == adapter.luid]
             return matches[0] if len(matches) == 1 else None
         if isinstance(adapter, TccAdapter):
-            matches = [d for d in devices if adapter.matches_pci(d.pci_bus) and d.driver_model == "TCC"]
+            matches = [d for d in devices if adapter.matches_pci(d.pci_bus) and d.driver_model == adapter.driver_model]
             return matches[0] if len(matches) == 1 else None
         if adapter.pci_address is None:
             return None
@@ -416,10 +416,10 @@ class Collector:
             snap.counter_adapter_matched = luid in per_luid or luid in adapters
             if isinstance(self.adapter, TccAdapter):
                 snap.counter_status = (
-                    "TCC compute-only GPU: Windows publishes no GPU counters for it, so VRAM and processes come "
+                    f"{self.adapter.driver_model} compute-only GPU: VRAM and processes come "
                     "from NVML. Per-process engine load, shared memory and commit are n/a, and per-process VRAM "
                     "is n/a when the driver does not report it." if snap.counter_adapter_matched else
-                    "NVML could not read this TCC GPU; VRAM and processes are unavailable.")
+                    f"NVML could not read this {self.adapter.driver_model} GPU; VRAM and processes are unavailable.")
             elif not snap.counter_adapter_matched:
                 snap.counter_status = ("Windows GPU counters could not be matched to the selected adapter; "
                                        "VRAM and processes are unavailable. The adapter may be temporarily "
