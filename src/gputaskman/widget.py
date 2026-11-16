@@ -25,6 +25,7 @@ def product_info(hardware):
     if identity != ("0x8086", "0xe222", "0x1849", "0x6027"):
         return {}
     return {"name": "Intel Arc Pro B65", "board": "ASRock · Creator 32GB",
+            "rated_power_w": 200,
             "image": "asrock-b65-creator.png", "source": PRODUCT_SOURCE,
             "specs": {"GPU product": "Intel Arc Pro B65", "Board maker": "ASRock",
                       "Architecture": "Xe2-HPG · Battlemage G31", "Memory capacity": "32 GB GDDR6",
@@ -244,7 +245,7 @@ def snapshot_source(gpu=None, *, discover=None, factory=None):
     """
     from .collector import Collector, enumerate_adapters, ordered_adapters
     from .report import to_json_dict
-    from .widget_controls import fan_state
+    from .widget_controls import fan_state, tuning_state
 
     discover = discover or enumerate_adapters
     factory = factory or Collector
@@ -281,6 +282,7 @@ def snapshot_source(gpu=None, *, discover=None, factory=None):
                     snapshot = to_json_dict(collectors[key].sample())
                     snapshot["hardware"] = hardware_info((snapshot.get("device") or {}).get("pci_bus"))
                     snapshot["fan_control"] = fan_state((snapshot.get("device") or {}).get("pci_bus"))
+                    snapshot["tuning"] = tuning_state((snapshot.get("device") or {}).get("pci_bus"))
                 except Exception as error:
                     snapshot = {"gpu": adapter.name, "adapter": asdict(adapter), "device": None,
                                 "error": f"{type(error).__name__}: {error}"}

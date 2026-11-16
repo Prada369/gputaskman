@@ -23,6 +23,17 @@ METRIC_SETTINGS = {
 }
 
 
+def vram_panel_label(used, total, *, estimated=False, segments=8):
+    """Visible top-panel usage bar. Unknown is text, never an empty 0% bar."""
+    if any(value is None or not isinstance(value, (int, float)) or not math.isfinite(value)
+           for value in (used, total)) or total <= 0 or used < 0:
+        return "VRAM unavailable"
+    fraction = used / total
+    filled = min(segments, max(0, round(fraction * segments)))
+    bar = "▰" * filled + "▱" * (segments - filled)
+    return f"VRAM{'~' if estimated else ''} {bar} {fraction * 100:.0f}%"
+
+
 def validate_setting(key, value):
     if key not in METRIC_SETTINGS or not isinstance(value, dict):
         raise ValueError("Unknown reading setting")
@@ -147,3 +158,62 @@ def fan_command(state, mode, percent=50):
         raise ValueError("Unknown fan control mode")
     return ["/usr/bin/pkexec", "/usr/bin/env", f"ARC_GPU_BDF={pci}",
             "/usr/local/bin/xe-fan-curve", *arguments]
+
+
+def tuning_state(pci, *, sysfs=Path("/sys/bus/pci/devices")):
+    if not isinstance(pci, str) or not re.fullmatch(r"[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]", pci):
+        return {"supported": False, "reason": "A matched PCI address is required."}
+    root = Path(sysfs) / pci
+    freq = root / "tile0/gt0/freq0"
+    try:
+        low, high, current_low, current_high = [int((freq / name).read_text())
+            for name in ("rpn_freq", "rp0_freq", "min_freq", "max_freq")]
+        if not 0 < low <= current_low <= current_high <= high:
+            raise ValueError("Invalid clock limits")
+    except (OSError, ValueError):
+        return {"supported": False, "reason": "This GPU does not expose the supported Xe clock controls."}
+    result = {"supported": True, "pci": pci, "clock_min": current_low, "clock_max": current_high,
+              "clock_low": low, "clock_high": high, "power_w": None, "profiles": []}
+    for hwmon in sorted((root / "hwmon").glob("hwmon*")):
+        try:
+            if (hwmon / "name").read_text().strip() == "xe":
+                result["power_w"] = int((hwmon / "power1_cap").read_text()) / 1e6
+                break
+        except (OSError, ValueError):
+            continue
+    try:
+        profile = (freq / "power_profile").read_text().strip()
+        result["profiles"] = [token.strip("[]") for token in profile.split() if token.strip("[]") in ("base", "power_saving")]
+        result["profile"] = next((token.strip("[]") for token in profile.split() if token.startswith("[")), None)
+    except OSError:
+        pass
+    return result
+
+
+def tuning_command(state, *, clock_min, clock_max, power_w=None, profile=None, power_ceiling=None):
+    if not state.get("supported"):
+        raise ValueError(state.get("reason", "Tuning is unavailable"))
+    pci = state.get("pci", "")
+    if not re.fullmatch(r"[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]", pci):
+        raise ValueError("A valid selected PCI address is required")
+    if any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)
+           or int(value) != value for value in (clock_min, clock_max)):
+        raise ValueError("Clock limits must be whole MHz values")
+    if not state["clock_low"] <= clock_min <= clock_max <= state["clock_high"]:
+        raise ValueError("Clock limits must stay within the GPU's reported range")
+    if clock_max < state["clock_min"]:
+        arguments = ["--clk-min", str(int(clock_min)), "--clk-max", str(int(clock_max))]
+    else:
+        arguments = ["--clk-max", str(int(clock_max)), "--clk-min", str(int(clock_min))]
+    if power_w is not None:
+        ceiling = power_ceiling if power_ceiling is not None else state.get("power_w")
+        if (isinstance(power_w, bool) or not isinstance(power_w, (int, float)) or not math.isfinite(power_w)
+                or int(power_w) != power_w or ceiling is None or not 1 <= power_w <= ceiling):
+            raise ValueError("Power limit must be within the displayed wattage range")
+        arguments += ["--power-w", str(int(power_w))]
+    if profile is not None:
+        if profile not in state.get("profiles", []):
+            raise ValueError("The selected power profile is not supported")
+        arguments += ["--profile", profile]
+    return ["/usr/bin/pkexec", "/usr/bin/env", f"ARC_GPU_BDF={pci}",
+            "/usr/local/bin/xe-gpu-tune", "set", *arguments]

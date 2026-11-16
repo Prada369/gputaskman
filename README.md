@@ -664,7 +664,12 @@ On Linux, `tools/desktop_widget.py` provides a native GTK desktop snapshot with
 GPU memory history, temperature, load, power, clock, fan, model activity, and
 expandable hardware readings and provenance. Drag its header to position it;
 the pin keeps it above other windows. Minimize hides it into the top status bar,
-where live readings continue. The tray menu restores it or quits the widget.
+where an eight-segment VRAM usage bar and percentage keep updating. `~` marks an
+estimated visible-client total; unknown/stale memory shows `VRAM unavailable`
+instead of an empty 0% bar. The tray menu restores it or quits the widget.
+The title-bar **×** (or Alt+F4) quits the application and its reader; **−** hides
+the windows while monitoring continues. Text labels use opaque foreground colors
+and at least 14 px, with native GTK controls.
 Launching it again restores the existing widget; `--start-hidden` starts hidden.
 The system Python needs `python3-gi`, GTK 3 and AyatanaAppIndicator3 bindings;
 `--python` chooses the Python environment with gputaskman dependencies:
@@ -695,8 +700,9 @@ preferences are saved atomically per GPU in `~/.config/gputaskman/widget.json`
 (or the corresponding `XDG_CONFIG_HOME` path). They do not modify telemetry.
 
 **Fan control** offers Automatic, Custom minimum, and Full speed on Intel Xe
-drivers. Its panel opens by default; the Fan reading's settings also include
-an **Open fan speed control** shortcut. Actual adjustment requires
+drivers. The title-bar **Fan controls** button and **Fan speed settings…** button
+open a separate control dialog; the Fan reading's settings also include a shortcut.
+Actual adjustment requires
 the patched `pwm1_enable` and fan-curve interface. Custom minimum
 sets a 30–100% PWM floor while retaining a thermal ramp to 100% at 85°C. Moving
 the slider does not write hardware; **Apply fan setting** explicitly invokes the
@@ -708,6 +714,23 @@ fan RPM is readable but the PWM interface is absent: controls correctly remain
 disabled with a reason. Actual fan changes through this widget are not hardware
 validated; command generation, device selection, monotonic ramps and unavailable
 driver behavior have synthetic tests.
+
+**Power & clocks…** exposes the installed Xe tuning helper's supported controls:
+power cap, min/max GPU frequency requests and Base/Power saving profile. On this
+B65, read-only inspection reports 200 W, a 400–2,400 MHz hardware range, and both
+profiles. The optional rated power cap shown by the widget comes from the known
+product's reference rating, not the hardware's critical limit. Only **Apply power
+& clocks** calls the existing privileged helper, bound to the selected PCI address;
+editing fields and telemetry collection never apply settings. Requests are range
+checked, and clock writes are ordered to avoid crossing the existing floor/ceiling.
+The dialog distinguishes frequency requests from actual measured operating clocks.
+Driver control discovery and GUI editing were validated on this host; no power,
+clock, or profile changes were applied as part of widget testing.
+
+**Protected performance counters** explains missing traffic/link/load readings
+separately from working temperature sensors. **Open GPU Sensors helper…** manually
+launches the existing desktop helper and its terminal authorization flow. Collection
+never starts it automatically or changes access policy.
 
 ```powershell
 uv run --locked gputaskman              # live TUI
@@ -1228,6 +1251,7 @@ Identification is designed to stay cheap. Measured on one Windows machine:
 
 | Probe | Cost | Used |
 |---|---|---|
+| Desktop tuning-control discovery (selected PCI frequency requests, power cap, profiles) | 0.288 ms median, 1.038 ms max across 30 warm reads on this B65, stock Xe on Linux 7.0.0-43-generic, 2026-11-15 | Read-only, once per widget refresh. No setting changes during discovery |
 | Desktop fan-control availability (selected PCI hwmon, read-only) | 0.083 ms median, 0.336 ms max across 30 warm reads on this B65, stock Xe on Linux 7.0.0-43-generic, 2026-11-15 | Once per widget refresh; reads only the selected GPU's fan mode/interface presence. No control writes during sampling |
 | Desktop widget PCI identity (four sysfs IDs and `lspci -Dmm -s` for the selected PCI address) | 5.92 ms median, 6.71 ms max across 30 warm reads on Intel Battlemage G31 (`8086:e222`), Linux 7.0.0-43-generic, 2026-11-15 | Once per selected PCI address in the optional widget worker, cached for its lifetime. One-second subprocess timeout; no driver changes or link-status substitutions |
 | Process list, command line, listening ports | under 1 ms | Once per process / every 5 s |
