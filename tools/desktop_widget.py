@@ -23,41 +23,37 @@ from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from gputaskman.widget import device_readings, gpu_identity, memory, metric, model_cards
+from gputaskman.widget_controls import METRIC_SETTINGS, Preferences, alarm_state, fan_command
 
 CSS = b"""
-window.snapshot { background: linear-gradient(150deg, #141c31, #101624 70%); color: #edf5ff;
-    border: 1px solid #35415d; border-radius: 20px; }
-.snapshot label { color: #e9effb; }
-.snapshot .eyebrow { font-size: 10px; font-weight: bold; color: #9fafff; letter-spacing: 2px; }
-.snapshot .gpu-name { font-size: 24px; font-weight: bold; letter-spacing: -0.5px; }
-.snapshot .muted { color: #95a4c1; font-size: 11px; }
-.snapshot .small { font-size: 10px; color: #95a4c1; }
-.snapshot .live { color: #70e3c2; font-size: 10px; font-weight: bold; }
-.snapshot .card { background: #1a2337; border: 1px solid #2b3853; border-radius: 12px; padding: 9px 12px; }
-.snapshot .memory-card { background: linear-gradient(110deg, #243251, #1a2b39); border-color: #3d5272; }
-.snapshot .memory-reading { font-size: 24px; font-weight: bold; color: #e5fbf5; }
-.snapshot .reading { font-size: 24px; font-weight: bold; color: #f4f7ff; }
-.snapshot .model-name { color: #c4caff; font-size: 14px; font-weight: bold; }
-.snapshot .section { font-size: 10px; color: #a4b2ce; font-weight: bold; letter-spacing: 1px; }
-.snapshot .warning { font-size: 11px; color: #f1c48b; }
-.snapshot .badge { background: #28395a; color: #b9d4ff; padding: 4px 8px; border-radius: 6px;
-    font-size: 10px; font-weight: bold; }
-.snapshot .gpu-icon { color: #aabaff; background: #283552; border-radius: 12px; padding: 8px; }
-.snapshot .metric-icon { color: #93a8e8; }
-.snapshot .model-card { background: linear-gradient(135deg, #262b45, #1a2438); border-color: #3b4167; }
-.snapshot .inventory-name { font-size: 13px; font-weight: bold; }
-.snapshot button { background: #202b43; border: 1px solid #33415f; border-radius: 8px;
-    color: #becae5; box-shadow: none; min-height: 22px; min-width: 22px; padding: 4px; }
-.snapshot button:hover { background: #2d3b5a; color: white; }
-.snapshot button:checked { color: #9cadff; background: #303f65; }
-.snapshot button.gpu-option { background: #182237; border: 1px solid #2d3b58; padding: 10px 12px; border-radius: 12px; }
-.snapshot button.gpu-option:hover { background: #24324c; }
-.snapshot button.selected-gpu { background: linear-gradient(110deg, #293957, #20363e); border-color: #6d99bb; }
-.snapshot progressbar trough { background: #36435b; border: none; border-radius: 4px; min-height: 7px; }
-.snapshot progressbar progress { background: linear-gradient(to right, #92a3ff, #6bdfc0); border: none;
-    border-radius: 4px; min-height: 7px; }
-.snapshot expander title { color: #b4c0db; padding: 3px 0; }
-.snapshot scrollbar { background: transparent; }
+window.snapshot { background-color: @theme_bg_color; color: @theme_fg_color; }
+.snapshot label { color: @theme_fg_color; }
+.snapshot .eyebrow { font-size: 11px; font-weight: 500; color: alpha(@theme_fg_color, 0.65); }
+.snapshot .gpu-name { font-size: 23px; font-weight: 600; }
+.snapshot .muted { color: alpha(@theme_fg_color, 0.7); font-size: 11px; }
+.snapshot .small { font-size: 10px; color: alpha(@theme_fg_color, 0.65); }
+.snapshot .live { color: alpha(@theme_fg_color, 0.75); font-size: 10px; }
+.snapshot .card { background-color: @theme_base_color; border: 1px solid @borders;
+    border-radius: 5px; padding: 10px 12px; }
+.snapshot .memory-reading { font-size: 22px; font-weight: 500; }
+.snapshot .reading { font-size: 24px; font-weight: 500; }
+.snapshot .model-name { font-size: 13px; font-weight: 600; }
+.snapshot .section { font-size: 11px; font-weight: 500; color: alpha(@theme_fg_color, 0.75); }
+.snapshot .warning { font-size: 11px; color: #a34700; }
+.snapshot .badge { color: alpha(@theme_fg_color, 0.75); font-size: 10px; }
+.snapshot .gpu-icon { padding: 4px; }
+.snapshot .inventory-name { font-size: 12px; font-weight: 500; }
+.snapshot button.gpu-option { background: @theme_base_color; border: 1px solid @borders;
+    padding: 8px 10px; border-radius: 5px; box-shadow: none; }
+.snapshot button.gpu-option:hover { background: shade(@theme_base_color, 0.96); }
+.snapshot button.selected-gpu { background: alpha(@theme_selected_bg_color, 0.1);
+    border-color: alpha(@theme_selected_bg_color, 0.6); }
+.snapshot button.stat-cell { background: @theme_base_color; border: 1px solid @borders;
+    border-radius: 4px; padding: 10px; box-shadow: none; }
+.snapshot button.stat-cell:hover { background: shade(@theme_base_color, 0.97); }
+.snapshot .alarm-dot { font-size: 10px; }
+.snapshot expander title { padding: 4px 0; }
+.snapshot .fan-panel { border-top: 1px solid @borders; padding-top: 10px; }
 """
 
 
@@ -95,12 +91,14 @@ class History(Gtk.DrawingArea):
     def draw_history(self, _widget, cr):
         width, height = self.get_allocated_width(), self.get_allocated_height()
         cr.set_line_width(1)
-        cr.set_source_rgb(.17, .22, .32)
+        foreground = self.get_style_context().get_color(Gtk.StateFlags.NORMAL)
+        cr.set_source_rgba(foreground.red, foreground.green, foreground.blue, .12)
         for fraction in (.25, .75):
             cr.move_to(0, height * fraction)
             cr.line_to(width, height * fraction)
         cr.stroke()
-        cr.set_source_rgb(.43, .87, .75)
+        found, accent = self.get_style_context().lookup_color("theme_selected_bg_color")
+        cr.set_source_rgb(accent.red, accent.green, accent.blue) if found else cr.set_source_rgb(.91, .33, .13)
         cr.set_line_width(1.8)
         drawing = False
         for index, value in enumerate(self.values):
@@ -164,6 +162,12 @@ class GpuWidget(Gtk.Application):
         self.detail_keys = {}
         self.current_product_image = None
         self.stop_timer = None
+        self.preferences = Preferences()
+        self.metric_dots = {}
+        self.custom_tiles = {}
+        self.tile_providers = {}
+        self.latest_values = {}
+        self.fan_process = None
 
     def do_startup(self):
         Gtk.Application.do_startup(self)
@@ -187,7 +191,7 @@ class GpuWidget(Gtk.Application):
     def build_window(self):
         self.window = Gtk.ApplicationWindow(application=self, title="GPU Snapshot")
         self.window.get_style_context().add_class("snapshot")
-        self.window.set_decorated(False)
+        self.window.set_decorated(True)
         self.window.set_default_size(510, 820)
         self.window.set_icon_name("video-display")
         self.window.set_skip_taskbar_hint(True)
@@ -203,27 +207,20 @@ class GpuWidget(Gtk.Application):
 
         root = box(spacing=0)
         self.window.add(root)
-        drag = Gtk.EventBox()
-        drag.connect("button-press-event", self.on_drag)
-        header = box(False, 8)
-        for setter in (header.set_margin_top, header.set_margin_start, header.set_margin_end):
-            setter(18)
-        header.set_margin_bottom(12)
-        header.pack_start(label("GPU SNAPSHOT", "eyebrow"), True, True, 0)
-        self.live = label("CONNECTING", "live")
-        header.pack_start(self.live, False, False, 0)
+        header = Gtk.HeaderBar(title="GPU Monitor", show_close_button=False)
+        self.header = header
+        self.window.set_titlebar(header)
+        self.live = label("Connecting", "live")
+        header.pack_end(self.live)
         pin = Gtk.ToggleButton()
         pin.add(Gtk.Image.new_from_icon_name("view-pin-symbolic", Gtk.IconSize.MENU))
-        pin.set_tooltip_text("Keep widget above other windows")
+        pin.set_tooltip_text("Keep above other windows")
         pin.connect("toggled", lambda button: self.window.set_keep_above(button.get_active()))
-        header.pack_start(pin, False, False, 0)
-        hide = Gtk.Button.new_from_icon_name("window-minimize-symbolic", Gtk.IconSize.MENU)
-        self.minimize_button = hide
-        hide.set_tooltip_text("Minimize to top status bar")
-        hide.connect("clicked", lambda _b: self.hide_window())
-        header.pack_start(hide, False, False, 0)
-        drag.add(header)
-        root.pack_start(drag, False, False, 0)
+        header.pack_start(pin)
+        self.minimize_button = Gtk.Button.new_from_icon_name("window-minimize-symbolic", Gtk.IconSize.MENU)
+        self.minimize_button.set_tooltip_text("Minimize to top bar")
+        self.minimize_button.connect("clicked", lambda _b: self.hide_window())
+        header.pack_end(self.minimize_button)
 
         scroll = Gtk.ScrolledWindow()
         scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
@@ -234,7 +231,7 @@ class GpuWidget(Gtk.Application):
         scroll.add(content)
         root.pack_start(scroll, True, True, 0)
         inventory_header = box(False)
-        inventory_header.pack_start(label("YOUR GPUs", "section"), True, True, 0)
+        inventory_header.pack_start(label("Graphics devices", "section"), True, True, 0)
         self.gpu_count = label("Detecting…", "small")
         inventory_header.pack_end(self.gpu_count, False, False, 0)
         content.pack_start(inventory_header, False, False, 0)
@@ -269,8 +266,11 @@ class GpuWidget(Gtk.Application):
         memory_card = box(style="card")
         memory_card.get_style_context().add_class("memory-card")
         row = box(False)
-        row.pack_start(label("VIDEO MEMORY", "section"), True, True, 0)
+        row.pack_start(label("Video memory", "section"), True, True, 0)
         self.vram_pct = label("—", "badge")
+        memory_dot = label("●", "alarm-dot")
+        row.pack_end(memory_dot, False, False, 2)
+        self.metric_dots["vram_pct"] = memory_dot
         row.pack_end(self.vram_pct, False, False, 0)
         memory_card.pack_start(row, False, False, 0)
         self.vram_text = label("Waiting for memory readings", "memory-reading")
@@ -279,32 +279,49 @@ class GpuWidget(Gtk.Application):
         memory_card.pack_start(self.vram_bar, False, False, 2)
         self.memory_source = label("Waiting for a reading", "small", True)
         memory_card.pack_start(self.memory_source, False, False, 0)
-        content.pack_start(memory_card, False, False, 0)
+        memory_button = Gtk.Button()
+        memory_button.get_style_context().add_class("stat-cell")
+        memory_card.get_style_context().remove_class("card")
+        memory_button.add(memory_card)
+        memory_button.connect("clicked", lambda button: self.edit_metric("vram_pct", button))
+        self.custom_tiles["vram_pct"] = (memory_button, self.vram_text)
+        content.pack_start(memory_button, False, False, 0)
 
         metrics = Gtk.Grid(column_spacing=8, row_spacing=8)
         metrics.set_column_homogeneous(True)
         self.metrics = {}
-        for index, (key, title) in enumerate((("util_gpu", "GPU LOAD"), ("temp", "GPU TEMP"),
-                         ("power_w", "POWER"), ("sm_clock", "GPU CLOCK"),
-                         ("fan_rpm", "FAN"), ("vram_temp", "VRAM TEMP"))):
-            card = box(spacing=3, style="card")
+        for index, (key, title) in enumerate((("util_gpu", "GPU load"), ("temp", "Temperature"),
+                         ("power_w", "Power"), ("sm_clock", "Clock"),
+                         ("fan_rpm", "Fan"), ("vram_temp", "Memory temp."))):
+            body = box(spacing=4)
+            card = Gtk.Button()
+            card.get_style_context().add_class("stat-cell")
+            card.connect("clicked", lambda button, metric_key=key: self.edit_metric(metric_key, button))
+            card.add(body)
             # Keep the controls compact so model activity fits on the desktop.
             caption = label(title, "section")
-            card.pack_start(caption, False, False, 0)
+            heading = box(False)
+            heading.pack_start(caption, True, True, 0)
+            dot = label("●", "alarm-dot")
+            heading.pack_end(dot, False, False, 0)
+            self.metric_dots[key] = dot
+            body.pack_start(heading, False, False, 0)
             value = label("n/a", "reading")
-            card.pack_start(value, False, False, 0)
+            body.pack_start(value, False, False, 0)
+            self.custom_tiles[key] = card, value
             self.metrics[key] = (value, caption, card)
             metrics.attach(card, index % 3, index // 3, 1, 1)
         content.pack_start(metrics, False, False, 0)
+        self.build_fan_controls(content)
 
         history = box(spacing=2)
-        history.pack_start(label("VRAM TREND  ·  LAST 120 SECONDS", "section"), False, False, 0)
+        history.pack_start(label("Memory history · last 120 seconds", "section"), False, False, 0)
         self.history = History()
         history.pack_start(self.history, False, False, 0)
         content.pack_start(history, False, False, 0)
 
         model_heading = box(False)
-        model_heading.pack_start(label("MODEL ACTIVITY", "section"), True, True, 0)
+        model_heading.pack_start(label("Model activity", "section"), True, True, 0)
         self.model_count = label("", "small")
         model_heading.pack_end(self.model_count, False, False, 0)
         content.pack_start(model_heading, False, False, 0)
@@ -325,12 +342,12 @@ class GpuWidget(Gtk.Application):
         spec_body = box(spacing=12)
         self.published_specs = box(spacing=6)
         self.published_specs.set_no_show_all(True)
-        self.published_specs.pack_start(label("PUBLISHED HARDWARE SPECIFICATIONS", "section"), False, False, 0)
+        self.published_specs.pack_start(label("Published hardware specifications", "section"), False, False, 0)
         self.product_specs = label("", "muted", True)
         self.published_specs.pack_start(self.product_specs, False, False, 0)
         self.published_specs.pack_start(label("Manufacturer ratings; current live readings are below.", "small", True), False, False, 0)
         spec_body.pack_start(self.published_specs, False, False, 0)
-        spec_body.pack_start(label("AVAILABLE LIVE READINGS", "section"), False, False, 0)
+        spec_body.pack_start(label("Available live readings", "section"), False, False, 0)
         self.spec_grid = Gtk.Grid(column_spacing=14, row_spacing=6)
         self.spec_grid.set_margin_top(10)
         self.spec_grid.set_margin_bottom(8)
@@ -360,8 +377,194 @@ class GpuWidget(Gtk.Application):
         footer.set_margin_bottom(14)
         self.updated = label("First snapshot is on its way", "small")
         footer.pack_start(self.updated, True, True, 0)
-        footer.pack_end(label("Drag header to move", "small"), False, False, 0)
+        footer.pack_end(label("Click a reading to configure", "small"), False, False, 0)
         root.pack_end(footer, False, False, 0)
+
+    def build_fan_controls(self, content):
+        self.fan_expander = Gtk.Expander(label="Fan control")
+        panel = box(spacing=9, style="fan-panel")
+        self.fan_status = label("Checking fan-control support…", "muted", True)
+        panel.pack_start(self.fan_status, False, False, 0)
+        mode_row = box(False, 10)
+        mode_row.pack_start(label("Mode", "section"), True, True, 0)
+        self.fan_mode = Gtk.ComboBoxText()
+        for key, title in (("automatic", "Automatic"), ("custom", "Custom minimum"), ("full", "Full speed")):
+            self.fan_mode.append(key, title)
+        self.fan_mode.set_active_id("automatic")
+        self.fan_mode.connect("changed", lambda _combo: self.update_fan_sensitivity())
+        mode_row.pack_end(self.fan_mode, False, False, 0)
+        panel.pack_start(mode_row, False, False, 0)
+        panel.pack_start(label("Minimum fan speed", "section"), False, False, 0)
+        self.fan_slider = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 30, 100, 1)
+        self.fan_slider.set_value(50)
+        self.fan_slider.set_value_pos(Gtk.PositionType.RIGHT)
+        self.fan_slider.set_tooltip_text("Minimum PWM duty; actual RPM depends on GPU temperature.")
+        self.fan_slider.connect("format-value", lambda _scale, value: f"{value:.0f}%")
+        panel.pack_start(self.fan_slider, False, False, 0)
+        panel.pack_start(label("Custom mode keeps a thermal ramp and reaches full speed at 85°C.", "small", True), False, False, 0)
+        self.fan_apply = Gtk.Button(label="Apply fan setting")
+        self.fan_apply.get_style_context().add_class("suggested-action")
+        self.fan_apply.set_halign(Gtk.Align.END)
+        self.fan_apply.connect("clicked", self.apply_fan_setting)
+        panel.pack_start(self.fan_apply, False, False, 0)
+        self.fan_result = label("", "small", True)
+        panel.pack_start(self.fan_result, False, False, 0)
+        self.fan_expander.add(panel)
+        content.pack_start(self.fan_expander, False, False, 0)
+        self.fan_supported = False
+        self.fan_current_gpu = None
+        self.update_fan_sensitivity()
+
+    def update_fan_sensitivity(self):
+        enabled = self.fan_supported and self.fan_process is None
+        self.fan_mode.set_sensitive(enabled)
+        self.fan_slider.set_sensitive(enabled and self.fan_mode.get_active_id() == "custom")
+        self.fan_apply.set_sensitive(enabled)
+
+    def update_fan_controls(self, snapshot):
+        state = snapshot.get("fan_control") or {}
+        self.fan_supported = bool(state.get("supported")) and Path("/usr/local/bin/xe-fan-curve").is_file()
+        if self.fan_supported:
+            self.fan_expander.set_label("Fan control · " + state.get("mode_name", "available"))
+            self.fan_status.set_text("Changes apply to this GPU only. Authorization is requested when needed.")
+            if self.fan_current_gpu != self.selected_gpu:
+                self.fan_mode.set_active_id({0: "full", 1: "custom", 2: "automatic"}.get(state.get("mode"), "automatic"))
+        else:
+            self.fan_expander.set_label("Fan control · read-only driver")
+            self.fan_status.set_text(state.get("reason") or "The selected GPU does not expose fan adjustment through the installed Intel fan helper.")
+        if self.fan_current_gpu != self.selected_gpu:
+            self.fan_result.set_text("")
+        self.fan_current_gpu = self.selected_gpu
+        self.update_fan_sensitivity()
+
+    def apply_fan_setting(self, _button):
+        if self.fan_process is not None or not self.last_snapshot:
+            return
+        try:
+            command = fan_command(self.last_snapshot.get("fan_control") or {},
+                                  self.fan_mode.get_active_id(), self.fan_slider.get_value())
+            self.fan_process = Gio.Subprocess.new(command, Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE)
+            self.fan_result.set_text("Applying fan setting; waiting for authorization if required…")
+            self.update_fan_sensitivity()
+            self.fan_process.communicate_utf8_async(None, None, self.on_fan_applied)
+        except (ValueError, GLib.Error) as error:
+            self.fan_result.set_text(str(error))
+
+    def on_fan_applied(self, process, result):
+        try:
+            _ok, _out, errors = process.communicate_utf8_finish(result)
+            if process.get_successful():
+                self.fan_result.set_text("Fan setting applied. Current mode will refresh with the next reading.")
+            elif process.get_if_exited() and process.get_exit_status() == 126:
+                self.fan_result.set_text("Authorization was cancelled. No setting was applied by the widget.")
+            else:
+                lines = (errors or "Fan helper returned an error.").strip().splitlines()
+                self.fan_result.set_text("Could not apply: " + lines[-1])
+        except GLib.Error as error:
+            self.fan_result.set_text(error.message)
+        self.fan_process = None
+        self.update_fan_sensitivity()
+
+    def edit_metric(self, key, button):
+        if self.selected_gpu is None:
+            return
+        gpu = self.selected_gpu
+        setting = self.preferences.get(gpu, key)
+        title, unit, maximum, default = METRIC_SETTINGS[key]
+        popup = Gtk.Popover.new(button)
+        panel = box(spacing=12)
+        panel.set_border_width(14)
+        panel.pack_start(label(title, "inventory-name"), False, False, 0)
+        grid = Gtk.Grid(column_spacing=12, row_spacing=10)
+        panel.pack_start(grid, False, False, 0)
+        use_color = Gtk.CheckButton(label="Custom reading color")
+        use_color.set_active(setting["color"] is not None)
+        color = Gtk.ColorButton()
+        color.set_use_alpha(False)
+        current = Gdk.RGBA()
+        if setting["color"]:
+            current.parse(setting["color"])
+        else:
+            current = button.get_style_context().get_color(Gtk.StateFlags.NORMAL)
+        color.set_rgba(current)
+        color.set_sensitive(use_color.get_active())
+        use_color.connect("toggled", lambda check: color.set_sensitive(check.get_active()))
+        grid.attach(use_color, 0, 0, 1, 1)
+        grid.attach(color, 1, 0, 1, 1)
+        enabled = Gtk.Switch(active=setting["alarm_enabled"])
+        enabled.set_halign(Gtk.Align.END)
+        grid.attach(label("Alarm light"), 0, 1, 1, 1)
+        grid.attach(enabled, 1, 1, 1, 1)
+        direction = Gtk.ComboBoxText()
+        direction.append("above", "At or above")
+        direction.append("below", "At or below")
+        direction.set_active_id(setting["direction"])
+        threshold = Gtk.SpinButton.new_with_range(0, maximum, 1)
+        threshold.set_value(setting["threshold"])
+        row = box(False, 6)
+        row.pack_start(threshold, True, True, 0)
+        row.pack_end(label(unit), False, False, 0)
+        grid.attach(direction, 0, 2, 1, 1)
+        grid.attach(row, 1, 2, 1, 1)
+        alarm_color = Gtk.ColorButton()
+        alarm_color.set_use_alpha(False)
+        rgba = Gdk.RGBA(); rgba.parse(setting["alarm_color"])
+        alarm_color.set_rgba(rgba)
+        grid.attach(label("Alarm color"), 0, 3, 1, 1)
+        grid.attach(alarm_color, 1, 3, 1, 1)
+        panel.pack_start(label("The light turns green within the limit and your alarm color at the threshold. Unknown readings keep a grey light.", "small", True), False, False, 0)
+        error_label = label("", "small", True)
+        panel.pack_start(error_label, False, False, 0)
+        actions = box(False)
+        reset = Gtk.Button(label="Reset")
+        save = Gtk.Button(label="Save")
+        save.get_style_context().add_class("suggested-action")
+        actions.pack_start(reset, False, False, 0)
+        actions.pack_end(save, False, False, 0)
+        panel.pack_start(actions, False, False, 0)
+        def rgb_hex(widget):
+            rgba = widget.get_rgba()
+            return "#" + "".join(f"{round(channel * 255):02x}" for channel in (rgba.red, rgba.green, rgba.blue))
+        def commit(value):
+            try:
+                self.preferences.set(gpu, key, value)
+                self.update_lights(self.latest_values)
+                popup.popdown()
+            except (ValueError, OSError) as error:
+                error_label.set_text("Could not save: " + str(error))
+        save.connect("clicked", lambda _b: commit({"color": rgb_hex(color) if use_color.get_active() else None,
+            "alarm_color": rgb_hex(alarm_color), "alarm_enabled": enabled.get_active(),
+            "direction": direction.get_active_id(), "threshold": threshold.get_value()}))
+        reset.connect("clicked", lambda _b: commit({}))
+        popup.add(panel)
+        popup.connect("closed", lambda widget: widget.destroy())
+        popup.show_all()
+        popup.popup()
+        # Retain access for keyboard/UI verification without a global settings window.
+        self.metric_popover = popup
+        self.metric_editor = {"save": save, "enabled": enabled, "threshold": threshold, "color": color,
+                              "use_color": use_color, "direction": direction, "alarm_color": alarm_color}
+
+    def update_lights(self, values):
+        self.latest_values = values
+        for key, (button, value_label) in self.custom_tiles.items():
+            setting = self.preferences.get(self.selected_gpu, key)
+            state = alarm_state(values.get(key), setting)
+            dot_color = setting["alarm_color"] if state == "alarm" else "#26a269" if state == "normal" else "#77767b"
+            if key not in self.tile_providers:
+                providers = [Gtk.CssProvider() for _ in range(3)]
+                for widget, provider in zip((value_label, self.metric_dots[key], button), providers):
+                    widget.get_style_context().add_provider(provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 2)
+                self.tile_providers[key] = providers
+            value_provider, dot_provider, border_provider = self.tile_providers[key]
+            value_css = f"label {{ color: {setting['color']}; }}" if setting['color'] else ""
+            value_provider.load_from_data(value_css.encode())
+            dot_provider.load_from_data(f"label {{ color: {dot_color}; }}".encode())
+            border_css = f"button {{ border-color: {setting['alarm_color']}; box-shadow: inset 3px 0 {setting['alarm_color']}; }}" if state == "alarm" else ""
+            border_provider.load_from_data(border_css.encode())
+            tooltip = ("Alarm disabled" if state == "off" else "Reading unavailable" if state == "unknown" else
+                       f"Alarm {'active' if state == 'alarm' else 'within limit'}: {setting['direction']} {setting['threshold']:g} {METRIC_SETTINGS[key][1]}")
+            self.metric_dots[key].set_tooltip_text(tooltip)
 
     def build_indicator(self):
         self.menu = Gtk.Menu()
@@ -546,11 +749,12 @@ class GpuWidget(Gtk.Application):
         self.last_snapshot = snapshot
         nv = snapshot.get("device") or {}
         identity_info = gpu_identity(snapshot)
-        self.live.set_text("● LIVE")
+        self.live.set_text("Live")
         self.notice.set_text("")
         self.notice.hide()
-        self.gpu_make.set_text(f"GPU {identity_info['index']}  /  {identity_info['make'].upper()}")
+        self.gpu_make.set_text(f"GPU {identity_info['index']} · {identity_info['make']}")
         self.gpu_name.set_text(identity_info["model"])
+        self.header.set_subtitle(identity_info["model"])
         self.board_name.set_text(f"Board by {identity_info['board_make']}" if identity_info['board_make'] != 'Not reported' else "Board maker not reported")
         product = identity_info["product"]
         if product:
@@ -592,9 +796,14 @@ class GpuWidget(Gtk.Application):
                 low = (reason or "").lower()
                 value_label.set_text("Locked" if "denied" in low or "privilege" in low else "Unknown")
             provenance = sources.get(key) or (nv.get("util_kind") if key == "util_gpu" else None)
-            card.set_tooltip_text(reason if nv.get(key) is None else provenance or nv.get("source"))
+            explanation = reason if nv.get(key) is None else provenance or nv.get("source")
+            card.set_tooltip_text((explanation or "Device reading") + "\nClick to set its color and alarm light.")
             if key == "util_gpu":
-                caption.set_text("GPU LOAD · EST." if nv.get("util_kind") else "GPU LOAD")
+                caption.set_text("Load (estimated)" if nv.get("util_kind") else "GPU load")
+        readings = {key: nv.get(key) for key in self.metrics}
+        readings["vram_pct"] = used / total * 100 if used is not None and total else None
+        self.update_lights(readings)
+        self.update_fan_controls(snapshot)
         cards = model_cards(snapshot)
         signature = json.dumps(cards, sort_keys=True)
         if signature != self.model_signature:
@@ -615,7 +824,7 @@ class GpuWidget(Gtk.Application):
                 card = box(style="card")
                 card.get_style_context().add_class("model-card")
                 heading = box(False, 8)
-                heading.pack_start(label("AI MODEL", "eyebrow"), True, True, 0)
+                heading.pack_start(label("Model", "eyebrow"), True, True, 0)
                 heading.pack_end(label("PID " + str(model["pid"]), "badge"), False, False, 0)
                 card.pack_start(heading, False, False, 0)
                 card.pack_start(label(model["name"], "model-name", True), False, False, 0)
@@ -708,7 +917,10 @@ class GpuWidget(Gtk.Application):
             self.unavailable_expander.hide()
 
     def set_unavailable(self, reason):
-        self.live.set_text("● UNAVAILABLE")
+        self.live.set_text("Unavailable")
+        self.update_lights({key: None for key in self.custom_tiles})
+        self.fan_supported = False
+        self.update_fan_sensitivity()
         suffix = "Last snapshot retained; readings are not live." if self.last_snapshot else "Waiting for the first reading."
         self.notice.set_text(reason + " " + suffix)
         self.notice.show()
@@ -729,6 +941,9 @@ class GpuWidget(Gtk.Application):
         if self.stopping:
             return GLib.SOURCE_REMOVE
         self.stopping = True
+        if self.fan_process is not None:
+            # Cancel an outstanding authorization request; do not change an applied curve.
+            self.fan_process.send_signal(signal.SIGTERM)
         self.hide_window()
         self.indicator.set_status(Indicator.IndicatorStatus.PASSIVE)
         if self.worker is None:

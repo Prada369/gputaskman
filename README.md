@@ -686,6 +686,27 @@ runtime reports and measured process VRAM remain distinguished; installed-only
 models do not become active cards. Missing counters remain unknown; a stopped/stale
 reader is labeled unavailable. The normal terminal commands remain available.
 
+The desktop widget follows the current Ubuntu/GTK theme with native controls.
+Click any reading tile (including video memory) to choose its text color, an alarm
+color, and an optional at-or-above or at-or-below threshold. The indicator is green
+within the configured limit, the chosen alarm color at the threshold, and neutral
+when a reading is unknown/stale or its alarm is off. These are visual alarms;
+preferences are saved atomically per GPU in `~/.config/gputaskman/widget.json`
+(or the corresponding `XDG_CONFIG_HOME` path). They do not modify telemetry.
+
+**Fan control** offers Automatic, Custom minimum, and Full speed on Intel Xe
+drivers exposing the patched `pwm1_enable` and fan-curve interface. Custom minimum
+sets a 30–100% PWM floor while retaining a thermal ramp to 100% at 85°C. Moving
+the slider does not write hardware; **Apply fan setting** explicitly invokes the
+existing `/usr/local/bin/xe-fan-curve` helper via polkit, bound to the selected PCI
+address. The widget does not install a helper, change authorization policy, rebuild
+a kernel, or persist fan changes at boot. The applied curve remains until changed
+or reset by the driver. On this B65 with the stock `7.0.0-43-generic` Xe module,
+fan RPM is readable but the PWM interface is absent: controls correctly remain
+disabled with a reason. Actual fan changes through this widget are not hardware
+validated; command generation, device selection, monotonic ramps and unavailable
+driver behavior have synthetic tests.
+
 ```powershell
 uv run --locked gputaskman              # live TUI
 uv run --locked gtm                     # shorter alias
@@ -1205,6 +1226,7 @@ Identification is designed to stay cheap. Measured on one Windows machine:
 
 | Probe | Cost | Used |
 |---|---|---|
+| Desktop fan-control availability (selected PCI hwmon, read-only) | 0.083 ms median, 0.336 ms max across 30 warm reads on this B65, stock Xe on Linux 7.0.0-43-generic, 2026-11-15 | Once per widget refresh; reads only the selected GPU's fan mode/interface presence. No control writes during sampling |
 | Desktop widget PCI identity (four sysfs IDs and `lspci -Dmm -s` for the selected PCI address) | 5.92 ms median, 6.71 ms max across 30 warm reads on Intel Battlemage G31 (`8086:e222`), Linux 7.0.0-43-generic, 2026-11-15 | Once per selected PCI address in the optional widget worker, cached for its lifetime. One-second subprocess timeout; no driver changes or link-status substitutions |
 | Process list, command line, listening ports | under 1 ms | Once per process / every 5 s |
 | Windows adapter discovery (DXGI + exact-LUID PnP identity + PCI location, no telemetry sample) | ~0.86 ms median, 2.60 ms max in 30 warm reads, 26.1 ms first/cold call (Windows 11 build 28000, RTX Spark N1X, driver 32.0.16.2114); same machine without the PnP probe: ~0.36 ms median | Once at startup; TUI rediscovery every 5 s. PnP uses fixed buffers, one interface lookup per adapter and at most two name-property reads, no path/device enumeration or retries. Synchronous OS calls are not a hard latency bound. Other drivers, virtual displays and multi-GPU laptops unmeasured; provider reconstruction has additional driver-dependent cost |
