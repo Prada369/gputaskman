@@ -1282,6 +1282,27 @@ class ModelTests(unittest.TestCase):
             self.assertEqual(classify(d, {}), "diffusion")
             self.assertIn("diffusion", AI_KINDS)
 
+    def test_relative_model_flags_resolve_against_target_cwd(self):
+        with tempfile.TemporaryDirectory() as target, tempfile.TemporaryDirectory() as monitor:
+            loaded, decoy = Path(target) / "model.gguf", Path(monitor) / "model.gguf"
+            loaded.touch()
+            decoy.touch()
+            cmd = ["llama-server", "-m", "model.gguf"]
+            old = os.getcwd()
+            os.chdir(monitor)
+            try:
+                with patch("gputaskman.procinfo.psutil.Process") as process:
+                    process.return_value.cwd.return_value = target
+                    self.assertEqual(_models_from_cmdline(cmd, 123), [str(loaded)])
+                    process.assert_called_once_with(123)
+                # The target's cwd is unknown: skip the path rather than guess with the monitor's cwd.
+                with patch("gputaskman.procinfo.psutil.Process") as process:
+                    process.return_value.cwd.side_effect = PermissionError("protected")
+                    self.assertEqual(_models_from_cmdline(cmd, 123), [])
+                self.assertEqual(_models_from_cmdline(cmd), [])
+            finally:
+                os.chdir(old)
+
     def test_layer_and_kv_estimates(self):
         model = GgufInfo(
             path="model.gguf", file_size=1000, version=3,
