@@ -91,8 +91,9 @@ def inferred_note(g) -> str:
 
 
 METAL_NOTE = ("macOS: unified memory, so GPU memory is part of system RAM. Rows show each process's graphics "
-              "footprint; other users' processes (WindowServer, daemons) show GPU% only, since reading their "
-              "memory needs root.")
+              "footprint (dirty bytes). Paged is footprint's swapped bytes for those same graphics categories, "
+              "compressed memory, not a Windows commit estimate. Other users' processes (WindowServer, daemons) "
+              "show GPU% only, since reading their memory needs root.")
 INTEL_MEMORY_NOTE = ("Intel: used is a sum over inspectable processes (no device counter); "
                      "total is the PCI window size, an estimate. Free is not shown.")
 WDDM_DEVICE_NOTE = "Windows does not report temperature, power, clocks or PCIe for this GPU."
@@ -130,6 +131,8 @@ def to_dict(s: Snapshot) -> dict:
             "shared_bytes": int(p.gpu.shared) if has_shared_counters(s, p) else None,
             "committed_bytes": int(p.gpu.committed) if wddm and "committed" in p.gpu.available else None,
             "paged_out_bytes": int(p.gpu.paged_out) if wddm and p.gpu.paged_available else None,
+            "graphics_swapped_bytes": (int(p.gpu.graphics_swapped) if s.backend == "metal" and p.gpu.attributed
+                                       and p.gpu.graphics_swapped is not None else None),
             "gpu_pct": round(p.gpu.gpu_pct, 1) if engines else None,
             "engines": {k: round(v, 1) for k, v in p.gpu.engines.items() if v} if engines else None,
             "engine_unavailable_reason": p.gpu.engine_reason or None,
@@ -230,6 +233,8 @@ def to_text(s: Snapshot, limit: int = 30) -> str:
             shared = "N/A"
         if wddm and not p.gpu.paged_available:
             paged = "N/A"
+        if s.backend == "metal":
+            paged = "N/A" if not p.gpu.attributed or p.gpu.graphics_swapped is None else gb(p.gpu.graphics_swapped)
         pid = p.pid_label
         pct = f"{p.gpu.gpu_pct:.0f}" if has_engine_counters(s, p) else "n/a"
         out.append(f"{pid:>{w}}  {p.name[:24]:<24} {p.kind:<10} {p.runtime[:24]:<24} {vram_label(p.gpu):>9} {shared:>8} "

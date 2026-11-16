@@ -16,7 +16,8 @@ MiB = 1 << 20
 NOISE = 16 * MiB  # smaller per-process moves are allocator and compositor churn, not a model loading
 SAME_PROCESS_SECS = 2.0  # one process's start time can move this much between runs (Linux boot-time rounding, clock steps)
 MEASURED = ("vram_bytes", "shared_bytes", "committed_bytes", "paged_out_bytes",
-            "vram_resident_bytes", "gtt_resident_bytes")  # resident: amdgpu, shared buffers included (never summed)
+            "vram_resident_bytes", "gtt_resident_bytes",  # resident: amdgpu, shared buffers included (never summed)
+            "graphics_swapped_bytes")  # macOS footprint swapped graphics bytes; not the Windows paged estimate
 DEVICE = (("vram_used", "dedicated used"), ("shared_used", "shared used"),
           ("attributed", "attributed to processes"), ("unattributed", "unattributed"))
 SEGMENT_ORDER = ("weights", "kv", "compute", "runtime", "unknown")
@@ -302,6 +303,13 @@ def to_text(d: dict) -> str:
 
     for p in procs:
         detail = []
+        swapped = p["measured"]["graphics_swapped_bytes"]
+        delta = swapped["delta"]  # a measured 0 on a new row is not a change
+        sides = [v for v in (swapped["before"], swapped["after"])
+                 if isinstance(v, (int, float)) and not isinstance(v, bool)]
+        if (delta is not None and abs(delta) >= NOISE) or (delta is None and any(abs(v) >= NOISE for v in sides)):
+            detail.append(f"  compressed graphics (footprint swapped)  {_gb(swapped['before'])} -> "
+                          f"{_gb(swapped['after'])}  {_signed(swapped['delta'])}")
         inf = p["inferred"]["vram_inferred_bytes"]
         if _moved(inf):
             detail.append(f"  inferred VRAM (WSL context match)  {_gb(inf['before'])} -> {_gb(inf['after'])}"

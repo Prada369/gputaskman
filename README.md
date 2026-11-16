@@ -478,7 +478,8 @@ macOS exposes without root:
 | GPU memory (header) | IOAccelerator `PerformanceStatistics`: `Alloc system memory` (all GPU allocations) out of physical RAM | device |
 | GPU% (header) | `Device Utilization %` | device |
 | GPU% | Each Metal client (`AGXDeviceUserClient`) names its creator PID and keeps a cumulative `accumulatedGPUTime`; the rate between samples, per client (a closed client never hides the others' work) | every process |
-| VRAM | `footprint`: the process's memory macOS charges to graphics (the `(graphics)` categories: Metal buffers, textures) | your own processes |
+| VRAM | `footprint`: dirty bytes of the categories macOS charges to graphics (the `(graphics)` categories: Metal buffers, textures) | your own processes |
+| Paged | `footprint` `swapped` bytes of those same graphics categories (compressed graphics memory) | your own processes |
 | Runtime, model files | Mapped files from `proc_pidinfo` region walks (psutil has no memory maps on macOS): `libggml*.dylib`, `libllama*.dylib`, `libmlx*.dylib`, `libtorch_cpu.dylib`, the Metal driver bundle | your own processes |
 
 Other users' processes (WindowServer, system daemons) show GPU% with memory `n/a`: `footprint` needs
@@ -491,8 +492,10 @@ never shows the previous process's numbers.
 
 Metal reports one GPU time per process, with no 3D/compute/copy/video split, so those columns show
 `n/a`; a Metal process above 10% GPU is classified `3D/game` unless something more specific applies
-(AI runtime, browser, compositor). Spill, paged, clocks, power, and temperature are not available, so
-the chart picker offers only GPU and GPU memory. Handy's log is read from
+(AI runtime, browser, compositor). Spill, clocks, power, and temperature are not available, so
+the chart picker offers only GPU and GPU memory. Paged is footprint's swapped graphics bytes, including
+a measured 0, and is `n/a` when footprint did not report `swapped` or could not read the process. It is
+not added to the VRAM column and it is not the Windows commit estimate. Handy's log is read from
 `~/Library/Logs/com.pais.handy/handy.log`.
 
 Live check on an M4 Mac mini (macOS 26.3.1): a PyTorch MPS job with a 2 GiB buffer and a matmul loop
@@ -1300,8 +1303,7 @@ downloads are bundled in this repository.
   the Windows counters would supply for a WDDM GPU.
 - Intel `xe` device-wide telemetry and controlled-load/shared-buffer validation of its per-process
   counters; Intel validation beyond the Arc A770 / UHD 730 pair.
-- macOS: a portable build, Ollama/llama.cpp/MLX validation, and compressed GPU memory (footprint's
-  `swapped`) as the paged column.
+- macOS: a portable build and Ollama/llama.cpp/MLX validation.
 - WSL: per-process GPU load for Linux rows, and Ollama's systemd journal as a log source.
 - Live throughput deltas, LM Studio validation, and per-model context accounting.
 - Opt-in ETW file-open tracing to name models loaded by read-and-close runtimes (any whisper or ONNX
