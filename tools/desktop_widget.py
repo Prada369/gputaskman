@@ -223,6 +223,7 @@ class GpuWidget(Gtk.Application):
         header.pack_end(self.minimize_button)
 
         scroll = Gtk.ScrolledWindow()
+        self.content_scroll = scroll
         scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         content = box(spacing=11)
         content.set_margin_start(20)
@@ -381,7 +382,8 @@ class GpuWidget(Gtk.Application):
         root.pack_end(footer, False, False, 0)
 
     def build_fan_controls(self, content):
-        self.fan_expander = Gtk.Expander(label="Fan control")
+        self.fan_expander = Gtk.Expander(label="Fan speed control")
+        self.fan_expander.set_expanded(True)
         panel = box(spacing=9, style="fan-panel")
         self.fan_status = label("Checking fan-control support…", "muted", True)
         panel.pack_start(self.fan_status, False, False, 0)
@@ -425,13 +427,14 @@ class GpuWidget(Gtk.Application):
         state = snapshot.get("fan_control") or {}
         self.fan_supported = bool(state.get("supported")) and Path("/usr/local/bin/xe-fan-curve").is_file()
         if self.fan_supported:
-            self.fan_expander.set_label("Fan control · " + state.get("mode_name", "available"))
+            self.fan_expander.set_label("Fan speed control · " + state.get("mode_name", "available"))
             self.fan_status.set_text("Changes apply to this GPU only. Authorization is requested when needed.")
             if self.fan_current_gpu != self.selected_gpu:
                 self.fan_mode.set_active_id({0: "full", 1: "custom", 2: "automatic"}.get(state.get("mode"), "automatic"))
         else:
-            self.fan_expander.set_label("Fan control · read-only driver")
-            self.fan_status.set_text(state.get("reason") or "The selected GPU does not expose fan adjustment through the installed Intel fan helper.")
+            self.fan_expander.set_label("Fan speed control · driver support missing")
+            reason = state.get("reason") or "The selected GPU does not expose fan adjustment through the installed Intel fan helper."
+            self.fan_status.set_text(reason + " The speed slider cannot be applied until that driver support is restored.")
         if self.fan_current_gpu != self.selected_gpu:
             self.fan_result.set_text("")
         self.fan_current_gpu = self.selected_gpu
@@ -475,6 +478,10 @@ class GpuWidget(Gtk.Application):
         panel = box(spacing=12)
         panel.set_border_width(14)
         panel.pack_start(label(title, "inventory-name"), False, False, 0)
+        if key == "fan_rpm":
+            fan_control = Gtk.Button(label="Open fan speed control")
+            fan_control.connect("clicked", lambda _button: (popup.popdown(), self.show_fan_controls()))
+            panel.pack_start(fan_control, False, False, 0)
         grid = Gtk.Grid(column_spacing=12, row_spacing=10)
         panel.pack_start(grid, False, False, 0)
         use_color = Gtk.CheckButton(label="Custom reading color")
@@ -544,6 +551,15 @@ class GpuWidget(Gtk.Application):
         self.metric_popover = popup
         self.metric_editor = {"save": save, "enabled": enabled, "threshold": threshold, "color": color,
                               "use_color": use_color, "direction": direction, "alarm_color": alarm_color}
+
+    def show_fan_controls(self):
+        self.fan_expander.set_expanded(True)
+        def scroll_to_fan():
+            adjustment = self.content_scroll.get_vadjustment()
+            target = max(0, self.fan_expander.get_allocation().y - 10)
+            adjustment.set_value(min(target, max(0, adjustment.get_upper() - adjustment.get_page_size())))
+            return GLib.SOURCE_REMOVE
+        GLib.idle_add(scroll_to_fan)
 
     def update_lights(self, values):
         self.latest_values = values

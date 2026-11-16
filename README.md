@@ -695,7 +695,9 @@ preferences are saved atomically per GPU in `~/.config/gputaskman/widget.json`
 (or the corresponding `XDG_CONFIG_HOME` path). They do not modify telemetry.
 
 **Fan control** offers Automatic, Custom minimum, and Full speed on Intel Xe
-drivers exposing the patched `pwm1_enable` and fan-curve interface. Custom minimum
+drivers. Its panel opens by default; the Fan reading's settings also include
+an **Open fan speed control** shortcut. Actual adjustment requires
+the patched `pwm1_enable` and fan-curve interface. Custom minimum
 sets a 30–100% PWM floor while retaining a thermal ramp to 100% at 85°C. Moving
 the slider does not write hardware; **Apply fan setting** explicitly invokes the
 existing `/usr/local/bin/xe-fan-curve` helper via polkit, bound to the selected PCI
