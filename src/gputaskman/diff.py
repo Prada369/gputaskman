@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 
 from .llm import gb
 
@@ -170,15 +171,30 @@ def _num(v) -> int | None:
 
 
 def _identity(s: dict) -> dict:
-    """What a snapshot says about its adapter that can be compared: vendor, PCI address, adapter key.
+    """Comparable adapter identity: vendor, PCI address (including a known domain), and adapter key.
 
-    Missing, zero (unknown) and malformed values are left out, so they can never conflict."""
+    Missing and malformed values are left out. Zero vendor IDs and adapter keys are unknown;
+    zero PCI components, including the domain, are valid identity values."""
     a = s.get("adapter")
     a = a if isinstance(a, dict) else {}
     out = {name: a[field] for field, name in (("vendor_id", "vendor"), ("luid", "key")) if _num(a.get(field))}
     pci = a.get("pci_address")
     if isinstance(pci, (list, tuple)) and len(pci) == 3 and all(_num(x) is not None and x >= 0 for x in pci):
         out["pci"] = tuple(pci)
+    domain = _num(a.get("pci_domain"))
+    if domain is not None and 0 <= domain <= 0xffffffff:
+        out["pci_domain"] = domain
+    else:
+        # Older snapshots kept the full PCI address only in device telemetry.
+        device = s.get("device")
+        bus_id = device.get("pci_bus") if isinstance(device, dict) else None
+        if isinstance(bus_id, str):
+            full = re.fullmatch(r"([0-9a-fA-F]{1,8}):([0-9a-fA-F]{1,2}):([0-9a-fA-F]{1,2})\.([0-7])", bus_id)
+            if full:
+                domain, bus, slot, function = (int(part, 16) for part in full.groups())
+                # Telemetry augments this adapter's identity only when their BDFs agree.
+                if slot <= 0x1f and (bus, slot, function) == out.get("pci"):
+                    out["pci_domain"] = domain
     return out
 
 
@@ -200,6 +216,8 @@ def check_adapter(before: dict, after: dict) -> tuple[str, str | None]:
     if "pci" in b and "pci" in a:
         if b["pci"] != a["pci"]:
             raise different("PCI " + " vs ".join("{:02x}:{:02x}.{}".format(*x) for x in (b["pci"], a["pci"])))
+        if "pci_domain" in b and "pci_domain" in a and b["pci_domain"] != a["pci_domain"]:
+            raise different(f"PCI domains {b['pci_domain']:08x} vs {a['pci_domain']:08x}")
         return "pci", None
     if "key" in b and "key" in a:
         if b["key"] == a["key"]:

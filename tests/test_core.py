@@ -43,6 +43,7 @@ from gputaskman.procinfo import (AI_KINDS, AMBIGUOUS_EXTS, MODEL_EXTS, PATH_ARG_
                                 make_model)
 from gputaskman.report import to_dict, to_text
 from gputaskman.stores import ollama_names, store_name
+from gputaskman.tcc import TccAdapter
 from tools.capture_screenshots import for_publication
 
 
@@ -421,6 +422,23 @@ class DeviceSelectionTests(unittest.TestCase):
         self.assertIsNone(select_nv_device(gpu, [nv_gpu, nv_gpu], 0))
         intel = Adapter(2, "Intel GPU", 0x8086, 8 * GiB, 0, False)
         self.assertIsNone(select_nv_device(intel, [nv_gpu], 0))
+
+    @patch("gputaskman.collector.sys.platform", "win32")
+    def test_mcdm_peer_in_another_domain_does_not_hide_wddm_telemetry(self):
+        gpu = Adapter(1, "RTX", 0x10DE, 16 * GiB, 0, False, (6, 0, 0))
+        compute = TccAdapter((1 << 62) | 9 << 16 | 6 << 8, "GB300", 0x10DE, 256 * GiB, 0, False,
+                             (6, 0, 0), pci_domain=9, driver_model="MCDM")
+        nv_gpu = NvDevice(index=0, pci_bus="00000000:06:00.0", driver_model="WDDM")
+        nv_compute = NvDevice(index=1, pci_bus="00000009:06:00.0", driver_model="MCDM")
+        devices = [nv_compute, nv_gpu]
+        self.assertIs(select_nv_device(gpu, devices, 0, [compute, gpu]), nv_gpu)
+        self.assertIs(select_nv_device(compute, devices, 1, [compute, gpu]), nv_compute)
+
+        other = Adapter(2, "RTX", 0x10DE, 16 * GiB, 0, False, (6, 0, 0))
+        self.assertIsNone(select_nv_device(gpu, devices, 0, [compute, gpu, other]))
+        # TCC remains eligible in the existing DXGI pairing path, so stay conservative.
+        compute.driver_model = nv_compute.driver_model = "TCC"
+        self.assertIsNone(select_nv_device(gpu, devices, 0, [compute, gpu]))
 
 
 class MemoryTests(unittest.TestCase):

@@ -10,6 +10,7 @@ from .collector import ProcRow, Snapshot
 from .llm import gb, server_gauge_text
 from .nvml import format_metric
 from .pdh import ProcGpu
+from .tcc import TccAdapter
 
 
 WSL_HOST_NOTE = ("WSL + Windows host counters: 'WSL VM' is the exact total of Linux GPU memory (all distros). "
@@ -113,6 +114,9 @@ def vram_total_label(s: Snapshot) -> str:
 
 def to_dict(s: Snapshot) -> dict:
     nv = dataclasses.asdict(s.nv) if s.nv else None
+    adapter = dataclasses.asdict(s.adapter) if s.adapter else None
+    if isinstance(s.adapter, TccAdapter):
+        adapter["pci_domain"] = s.adapter.pci_domain
     procs = []
     for p in s.procs:
         wddm = has_wddm_counters(s, p)
@@ -162,7 +166,7 @@ def to_dict(s: Snapshot) -> dict:
         procs.append(item)
     return {
         "taken": s.taken, "gpu": s.adapter.name if s.adapter else None, "driver": s.driver, "cuda": s.cuda,
-        "adapter": dataclasses.asdict(s.adapter) if s.adapter else None,
+        "adapter": adapter,
         "vram_total": s.vram_total or None, "vram_used": s.vram_used, "shared_used": s.shared_used,
         "attributed": s.attributed, "backend": s.backend, "shared_is_spill": s.shared_is_spill,
         "host_status": s.host_status or None,
