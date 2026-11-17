@@ -422,6 +422,12 @@ class DeviceSelectionTests(unittest.TestCase):
         self.assertIsNone(select_nv_device(gpu, [nv_gpu, nv_gpu], 0))
         intel = Adapter(2, "Intel GPU", 0x8086, 8 * GiB, 0, False)
         self.assertIsNone(select_nv_device(intel, [nv_gpu], 0))
+        # Windows reports PCI segment 15 bus 1 as bus 0xF01 (RTX Spark N1X, driver 621.14).
+        spark = Adapter(3, "NVIDIA RTX Spark N1X", 0x10DE, 80 * GiB, 0, False, (0xF01, 0, 0))
+        nv_spark = NvDevice(index=0, pci_bus="0000000F:01:00.0", driver_model="WDDM")
+        nv_bus1 = NvDevice(index=1, pci_bus="00000000:01:00.0", driver_model="WDDM")
+        self.assertIs(select_nv_device(spark, [npu, nv_bus1, nv_spark], 0), nv_spark)
+        self.assertIsNone(select_nv_device(spark, [npu, nv_bus1], 0))
 
     @patch("gputaskman.collector.sys.platform", "win32")
     def test_mcdm_peer_in_another_domain_does_not_hide_wddm_telemetry(self):

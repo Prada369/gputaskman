@@ -10,7 +10,7 @@ from contextlib import ExitStack
 
 import psutil
 
-from .amdsmi import AmdSmi, _bdf, amdsmi_status
+from .amdsmi import AmdSmi, amdsmi_status
 from .adl import Adl
 from .dxgi import (VENDOR_AMD, VENDOR_NVIDIA, VENDOR_HUAWEI, VENDOR_INTEL, VENDOR_QUALCOMM, Adapter,
                   adapter_driver_version)
@@ -20,7 +20,7 @@ from . import nvml as nvml_mod
 from .nvml import Nvml, NvDevice
 from .pdh import ProcGpu
 from .procinfo import AI_KINDS, ProcDetail, ProcInspector, classify
-from .tcc import TccAdapter, TccCounters, tcc_adapters
+from .tcc import TccAdapter, TccCounters, _pci_identity, tcc_adapters
 from .telemetry import DeviceTelemetry
 
 if sys.platform == "win32":
@@ -184,6 +184,16 @@ def ordered_adapters(adapters: list[Adapter]) -> list[Adapter]:
                   key=lambda a: (isinstance(a, TccAdapter), a.vendor_id != VENDOR_NVIDIA, -a.dedicated_vram, a.luid))
 
 
+def _wddm_bdf(pci_bus) -> tuple[int, int, int] | None:
+    """An NVML PCI address in WDDM's ADAPTERADDRESS form. Windows puts the PCI segment above the 8-bit
+    bus (segment 15 bus 1 is bus 0xF01), so domain-0 addresses are unchanged."""
+    identity = _pci_identity(pci_bus)
+    if identity is None:
+        return None
+    domain, (bus, device, function) = identity
+    return domain << 8 | bus, device, function
+
+
 def select_nv_device(adapter: Adapter | None, devices: list[NvDevice], gpu_index: int,
                      adapters: list[Adapter] | None = None) -> NvDevice | None:
     if adapter:
@@ -203,7 +213,7 @@ def select_nv_device(adapter: Adapter | None, devices: list[NvDevice], gpu_index
         if adapters is not None and sum(a.pci_address == adapter.pci_address for a in adapters
                                         if not (isinstance(a, TccAdapter) and a.driver_model == "MCDM")) != 1:
             return None
-        matches = [d for d in devices if _bdf(d.pci_bus) == adapter.pci_address and d.driver_model != "MCDM"]
+        matches = [d for d in devices if _wddm_bdf(d.pci_bus) == adapter.pci_address and d.driver_model != "MCDM"]
         if len(matches) == 1:
             return matches[0]
         return None
@@ -431,7 +441,7 @@ class Collector:
                 snap.counter_status = ("Some Windows adapter memory counters are unavailable; "
                                        "GPU-PV VMs may not expose them.")
             if (nv is None and self.adapter.vendor_id == VENDOR_NVIDIA and self.adapter.pci_address
-                    and any(_bdf(b) == self.adapter.pci_address for b in nvml_mod.LOST)):
+                    and any(_wddm_bdf(b) == self.adapter.pci_address for b in nvml_mod.LOST)):
                 snap.nv_lost = True
                 snap.counter_status = " ".join(filter(None, (
                     snap.counter_status, "NVIDIA telemetry stopped after this GPU was re-enabled; "
