@@ -49,6 +49,19 @@ READING_TITLES = {"mem_total": "Usable VRAM", "mem_used": "Used VRAM", "mem_rese
     "enc": "Encoder load", "dec": "Decoder load", "pstate": "P-state", "compute_cap": "CUDA capability"}
 
 
+def widget_version():
+    """Read the widget's own version in a checkout or extracted Ubuntu bundle."""
+    root = Path(__file__).resolve().parents[2]
+    for path in (root / "packaging/linux-widget/VERSION", root / "VERSION"):
+        try:
+            value = path.read_text().strip()
+            if re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][\w.]+)?", value):
+                return value
+        except OSError:
+            pass
+    return "unknown"
+
+
 def reading_caption(device, key):
     if key == "temp" and device.get("temp_kind"):
         return f"Temperature ({device['temp_kind']})"
@@ -66,6 +79,8 @@ def reading_source(device, key):
     detail = device.get(kind) if kind else None
     if detail and detail not in source:
         source += " · " + detail
+    if key == "sm_clock" and device.get("driver_model") in ("xe", "i915"):
+        source += ". Actual GPU clock; 0 MHz can indicate idle power saving. The minimum clock applies while active."
     return source
 
 
@@ -79,7 +94,7 @@ class FanReadings:
         if isinstance(rpm, (int, float)) and math.isfinite(rpm) and rpm > 0:
             self.last_nonzero[key] = (rpm, now)
 
-    def present(self, key, device, now):
+    def present(self, key, device, now, *, keep_recent=False):
         rpm = device.get("fan_rpm")
         intel = device.get("driver_model") == "xe" or device.get("source") == "Intel sysfs"
         text = metric(rpm, " rpm")
@@ -92,6 +107,8 @@ class FanReadings:
                 previous, taken = self.last_nonzero[key]
                 age = max(0, int(now - taken))
                 note += f" Last non-zero report: {metric(previous, ' rpm')}, {age}s ago (historical)."
+                if keep_recent and 0 <= now - taken <= 8:
+                    text = metric(previous, " rpm") + f" · {age}s old"
         return text, note
 
 

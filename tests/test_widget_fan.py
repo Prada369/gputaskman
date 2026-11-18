@@ -21,6 +21,16 @@ class FanReadingTests(unittest.TestCase):
         self.assertEqual(text, '0 reported')
         self.assertNotIn('Last non-zero', note)
 
+    def test_recent_sample_display_is_aged_bounded_and_keeps_raw_zero(self):
+        tracker = FanReadings()
+        tracker.record('gpu-a', {'fan_rpm': 1700}, 10)
+        raw = {'fan_rpm': 0, 'driver_model': 'xe'}
+        text, note = tracker.present('gpu-a', raw, 14, keep_recent=True)
+        self.assertEqual(text, '1,700 rpm · 4s old')
+        self.assertEqual(raw['fan_rpm'], 0)
+        self.assertIn('driver reported 0 RPM', note)
+        self.assertEqual(tracker.present('gpu-a', raw, 19, keep_recent=True)[0], '0 reported')
+
     def test_history_from_another_gpu_is_never_used(self):
         tracker = FanReadings()
         tracker.record('gpu-a', {'fan_rpm': 1700}, 10)

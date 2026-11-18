@@ -20,6 +20,7 @@ def files_to_package() -> list[tuple[Path, Path]]:
     files.append((ROOT / "LICENSE", Path("gputaskman-widget/LICENSE")))
     for source, target_root in (
         (ROOT / "tools" / "desktop_widget.py", Path("gputaskman-widget/tools")),
+        (ROOT / "tools" / "gputaskman-vram-fan-target", Path("gputaskman-widget/tools")),
         (ROOT / "src" / "gputaskman", Path("gputaskman-widget/src/gputaskman")),
         (ROOT / "assets" / "gpus", Path("gputaskman-widget/assets/gpus")),
     ):

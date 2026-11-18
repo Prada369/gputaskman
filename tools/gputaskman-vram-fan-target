@@ -1,0 +1,322 @@
+#!/usr/bin/python3 -I
+"""Live Intel Xe VRAM fan target, controlled by the widget's stdin lease."""
+from __future__ import annotations
+
+import argparse
+import errno
+import fcntl
+import json
+import os
+from pathlib import Path
+import re
+import select
+import signal
+import stat
+import sys
+import time
+
+BDF = re.compile(r"[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]\Z")
+running = True
+
+
+def stop(_signum, _frame):
+    global running
+    running = False
+
+
+def write(path, value):
+    path.write_text(str(value))
+
+
+def emit(message):
+    try:
+        print(message, flush=True)
+    except BrokenPipeError:
+        # GUI termination must never interrupt restoration of the fan curve.
+        pass
+
+
+def read_c(path):
+    value = int(path.read_text()) / 1000
+    if not -20 <= value <= 150:
+        raise ValueError(f"Invalid temperature from {path.name}")
+    return value
+
+
+def pwm_demand(hottest, package, target, floor, previous):
+    demand = max(floor, min(100, floor + (hottest - (target - 8)) * 6))
+    demand = max(demand, min(100, max(0, 70 + (package - 85) * 6)))
+    wanted = round(demand * 255 / 100)
+    return wanted if wanted >= previous else max(wanted, previous - 5)
+
+
+def snapshot_curve(hwmon):
+    points = []
+    for index in range(1, 11):
+        temp, pwm = [hwmon / f"pwm1_auto_point{index}_{suffix}" for suffix in ("temp", "pwm")]
+        if not temp.exists() or not pwm.exists():
+            break
+        try:
+            points.append((temp, int(temp.read_text()), pwm, int(pwm.read_text())))
+        except OSError as error:
+            # Some backports expose ten files but only implement the valid slots.
+            if error.errno == errno.EINVAL and points:
+                break
+            raise
+    if not points:
+        raise ValueError("Cannot save the existing fan curve")
+    return points
+
+
+def restore(hwmon, mode, points):
+    enable = hwmon / "pwm1_enable"
+    if mode == 1:
+        # Direct pwm1 writes replace every curve point's duty. Restore the
+        # complete curve, including the final point that commits it to firmware.
+        for temp, temperature, pwm, duty in points:
+            write(temp, temperature)
+            write(pwm, duty)
+    else:
+        write(enable, mode)
+
+
+class Lease:
+    def __init__(self):
+        self.last = time.monotonic()
+        self.buffer = b""
+        self.active = True
+
+    def poll(self, timeout, target, floor):
+        readable, _, _ = select.select([0], [], [], timeout)
+        if readable:
+            chunk = os.read(0, 4096)
+            if not chunk:
+                return None
+            self.buffer += chunk
+            if len(self.buffer) > 8192:
+                raise ValueError("Invalid widget control message")
+            while b"\n" in self.buffer:
+                line, self.buffer = self.buffer.split(b"\n", 1)
+                if line == b"stop":
+                    return None
+                if line in (b"active 0", b"active 1"):
+                    self.active = line == b"active 1"
+                    self.last = time.monotonic()
+                    continue
+                command = line.decode("ascii").split()
+                if len(command) != 3 or command[0] != "target":
+                    raise ValueError("Invalid widget control message")
+                target, floor = map(int, command[1:])
+                if not 65 <= target <= 95 or not 40 <= floor <= 100:
+                    raise ValueError("Fan target is outside the supported range")
+                self.last = time.monotonic()
+        if time.monotonic() - self.last > 8:
+            raise ValueError("Widget stopped responding")
+        return target, floor
+
+
+class TuningSession:
+    """Snapshot and restore only matched driver controls, never critical limits."""
+    def __init__(self, root, hwmon, args):
+        self.freq = root / 'tile0/gt0/freq0'
+        self.power = hwmon / 'power1_cap'
+        self.before = {}
+        self.wanted = {}
+        self.last_power_change = 0
+        self.guard_floor = args.guard_power_floor_w
+        for name, value in [('min_freq', args.clock_min), ('max_freq', args.clock_max),
+                            ('power_profile', args.power_profile)]:
+            if value is not None:
+                self.before[name] = (self.freq/name).read_text().strip()
+                self.wanted[name] = value
+        if args.clock_min is not None or args.clock_max is not None:
+            if args.clock_min is None or args.clock_max is None:
+                raise ValueError('Both clock limits are required')
+            low, high = [int((self.freq/name).read_text()) for name in ('rpn_freq', 'rp0_freq')]
+            if not low <= args.clock_min <= args.clock_max <= high:
+                raise ValueError('Clock limits exceed the driver range')
+        if args.power_profile is not None:
+            offered = (self.freq/'power_profile').read_text().replace('[','').replace(']','').split()
+            if args.power_profile not in offered:
+                raise ValueError('Power profile is unsupported')
+            self.before['power_profile'] = next((token[1:-1] for token in
+                (self.freq/'power_profile').read_text().split() if token.startswith('[')), None)
+            if self.before['power_profile'] is None:
+                raise ValueError('Cannot snapshot the active power profile')
+        self.old_power = int(self.power.read_text()) if args.power_w is not None or self.guard_floor else None
+        if self.old_power is not None:
+            self.base_power = args.power_w * 1000000 if args.power_w is not None else self.old_power
+            # The owner-confirmed B65 board has a 200 W rating. Other boards
+            # may only lower the current cap through this helper.
+            board = tuple((root/name).read_text().strip().lower() for name in
+                          ('vendor', 'device', 'subsystem_vendor', 'subsystem_device'))
+            ceiling = max(self.old_power, 200000000) if board == ('0x8086','0xe222','0x1849','0x6027') else self.old_power
+            if not 1000000 <= self.base_power <= ceiling:
+                raise ValueError('Power request exceeds the supported session ceiling')
+            if self.guard_floor is not None and not 1 <= self.guard_floor <= self.base_power // 1000000:
+                raise ValueError('Thermal guard minimum exceeds the profile power cap')
+
+    def clocks(self, values):
+        if 'min_freq' not in values:
+            return
+        minimum, maximum = int(values['min_freq']), int(values['max_freq'])
+        order = [('max_freq', maximum), ('min_freq', minimum)]
+        if maximum < int((self.freq/'min_freq').read_text()):
+            order.reverse()
+        for name, value in order:
+            if int((self.freq/name).read_text()) != value:
+                for attempt in range(20):
+                    try:
+                        write(self.freq/name, value)
+                        break
+                    except OSError as error:
+                        if error.errno not in (errno.EAGAIN, errno.EBUSY, errno.EINTR) or attempt == 19:
+                            raise
+                        time.sleep(.05)
+                if int((self.freq/name).read_text()) != value:
+                    raise ValueError(f'Driver did not confirm {name}')
+
+    def apply(self):
+        self.clocks(self.wanted)
+        if 'power_profile' in self.wanted:
+            write(self.freq/'power_profile', self.wanted['power_profile'])
+        if self.old_power is not None:
+            write(self.power, self.base_power)
+            if int(self.power.read_text()) != self.base_power:
+                raise ValueError('Driver did not confirm profile power')
+
+    def restore(self):
+        if self.old_power is not None:
+            write(self.power, self.old_power)
+        self.clocks(self.before)
+        if 'power_profile' in self.before:
+            write(self.freq/'power_profile', self.before['power_profile'])
+
+    def guard(self, temperature, target, pwm, now):
+        if self.old_power is None:
+            return None
+        current = int(self.power.read_text())
+        if self.guard_floor is not None and now - self.last_power_change >= 4:
+            wanted = current
+            if temperature > target + 1 and pwm >= 250:
+                wanted = max(self.guard_floor * 1000000, current - 5000000)
+            elif temperature < target - 5 and now - self.last_power_change >= 20:
+                wanted = min(self.base_power, current + 5000000)
+            if wanted != current:
+                write(self.power, wanted)
+                self.last_power_change = now
+                current = int(self.power.read_text())
+        return current / 1000000
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--pci", required=True)
+    parser.add_argument("--target", required=True, type=int)
+    parser.add_argument("--floor", required=True, type=int)
+    parser.add_argument('--clock-min', type=int)
+    parser.add_argument('--clock-max', type=int)
+    parser.add_argument('--power-w', type=int)
+    parser.add_argument('--power-profile', choices=['base', 'power_saving'])
+    parser.add_argument('--guard-power-floor-w', type=int)
+    parser.add_argument('--workload', action='store_true')
+    args = parser.parse_args()
+    if not BDF.fullmatch(args.pci) or not 65 <= args.target <= 95 or not 40 <= args.floor <= 100:
+        parser.error("Invalid PCI address, target temperature, or fan floor")
+    if os.geteuid() != 0 or not stat.S_ISFIFO(os.fstat(0).st_mode):
+        parser.error("Start this helper through the widget with administrator authorization")
+    lock_fd = os.open(f"/run/lock/gputaskman-vram-fan-{args.pci.lower()}",
+                      os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        emit("Another VRAM fan controller already owns this GPU")
+        return 1
+    root = Path("/sys/bus/pci/devices") / args.pci
+    hwmon = next((p for p in sorted((root / "hwmon").glob("hwmon*"))
+                  if (p / "name").read_text().strip() == "xe"), None)
+    if hwmon is None:
+        raise ValueError("No matched Intel Xe hwmon device")
+    labels = {}
+    for path in hwmon.glob("temp*_label"):
+        name = path.read_text().strip().lower()
+        if name == "pkg" or name == "vram" or re.fullmatch(r"vram_ch_\d+", name):
+            labels[name] = path.with_name(path.name[:-6] + "_input")
+    vram = [path for name, path in labels.items() if name.startswith("vram")]
+    pkg = labels.get("pkg")
+    if not vram or pkg is None:
+        raise ValueError("VRAM and package temperature sensors are required")
+    enable, pwm = hwmon / "pwm1_enable", hwmon / "pwm1"
+    mode, previous = int(enable.read_text()), int(pwm.read_text())
+    if mode not in (0, 1, 2) or not 0 <= previous <= 255:
+        raise ValueError("Cannot read the current fan mode")
+    # Read every required sensor before taking manual control.
+    for path in [*vram, pkg]:
+        read_c(path)
+    points = snapshot_curve(hwmon) if mode == 1 else []
+    tuning = TuningSession(root, hwmon, args)
+    lease = Lease()
+    lease.active = not args.workload
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    failed, changed, next_sample = False, False, 0
+    target, floor = args.target, args.floor
+    try:
+        while running:
+            settings = lease.poll(0.25, target, floor)
+            if settings is None:
+                break
+            target, floor = settings
+            now = time.monotonic()
+            if not lease.active:
+                if changed:
+                    restore(hwmon, mode, points)
+                    tuning.restore()
+                    changed = False
+                if now >= next_sample:
+                    emit(json.dumps({'waiting': True}))
+                    next_sample = now + 2
+                continue
+            if now < next_sample:
+                continue
+            hottest, package = max(read_c(path) for path in vram), read_c(pkg)
+            if not changed:
+                changed = True
+                tuning.apply()
+                if mode != 1:
+                    write(enable, 1)
+            elif int(enable.read_text()) != 1:
+                raise ValueError("Fan mode changed outside the widget")
+            previous = pwm_demand(hottest, package, target, floor, previous)
+            write(pwm, previous)
+            power = tuning.guard(hottest, target, previous, now)
+            emit(json.dumps({"vram": hottest, "package": package, "target": target,
+                             "duty": round(previous * 100 / 255), 'power_w': power}))
+            next_sample = now + 2
+    except (OSError, ValueError) as error:
+        failed = True
+        emit(f"Fan controller stopped: {error}")
+    finally:
+        if changed:
+            try:
+                restore(hwmon, mode, points)
+                emit("Previous fan mode restored.")
+            except OSError as error:
+                failed = True
+                write(enable, 0)
+                emit(f"Could not restore custom curve; full speed enabled: {error}")
+            finally:
+                try:
+                    tuning.restore()
+                except (OSError, ValueError) as error:
+                    failed = True
+                    emit(f'Could not restore tuning settings: {error}')
+    return int(failed)
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, ValueError) as error:
+        emit(f"Fan controller error: {error}")
+        raise SystemExit(1)

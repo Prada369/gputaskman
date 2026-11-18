@@ -123,6 +123,7 @@ def fan_state(pci, *, sysfs=Path("/sys/bus/pci/devices")):
             if hwmon.joinpath("name").read_text().strip() != "xe":
                 continue
             mode = hwmon / "pwm1_enable"
+            pwm = hwmon / "pwm1"
             points = sum((hwmon / f"pwm1_auto_point{i}_pwm").exists() for i in range(1, 11))
             if not mode.exists() or points < 4:
                 return {"supported": False, "pci": pci,
@@ -131,14 +132,25 @@ def fan_state(pci, *, sysfs=Path("/sys/bus/pci/devices")):
                 current_mode = int(mode.read_text().strip())
             except (OSError, ValueError):
                 current_mode = None
-            return {"supported": True, "pci": pci, "mode": current_mode,
+            sensors = set()
+            for path in hwmon.glob("temp*_label"):
+                try:
+                    name = path.read_text().strip().lower()
+                    temperature = int(path.with_name(path.name[:-6] + "_input").read_text())
+                    if -20000 <= temperature <= 150000:
+                        sensors.add(name)
+                except (OSError, ValueError):
+                    continue
+            vram = any(name == "vram" or re.fullmatch(r"vram_ch_\d+", name) for name in sensors)
+            return {"supported": True, "target_supported": pwm.exists() and vram and "pkg" in sensors,
+                    "pci": pci, "mode": current_mode,
                     "mode_name": {0: "Full speed", 1: "Custom curve", 2: "Automatic"}.get(current_mode, "Not readable")}
         except OSError:
             continue
     return {"supported": False, "pci": pci, "reason": "No supported Intel xe fan controller was found for this GPU."}
 
 
-def fan_command(state, mode, percent=50):
+def fan_command(state, mode, percent=50, *, target=80, floor=60):
     if not state.get("supported"):
         raise ValueError(state.get("reason", "Fan control is unavailable"))
     pci = state.get("pci", "")
@@ -154,6 +166,17 @@ def fan_command(state, mode, percent=50):
         floor = round(percent * 255 / 100)
         # Retain a thermal ramp even with a custom fan floor.
         arguments = ["set", f"40:{floor}", f"60:{max(floor, 180)}", f"75:{max(floor, 225)}", "85:255"]
+    elif mode in ("performance", "vram-target"):
+        if not state.get("target_supported"):
+            raise ValueError("This xe driver does not expose both VRAM sensors and direct PWM control.")
+        if mode == "performance":
+            target, floor = 80, 60
+        if isinstance(target, bool) or not isinstance(target, (int, float)) or not math.isfinite(target) or not 65 <= target <= 95:
+            raise ValueError("VRAM target must be between 65 and 95 °C")
+        if isinstance(floor, bool) or not isinstance(floor, (int, float)) or not math.isfinite(floor) or not 40 <= floor <= 100:
+            raise ValueError("Fan floor must be between 40 and 100 percent")
+        return ["/usr/bin/pkexec", "/usr/local/bin/gputaskman-vram-fan-target", "--pci", pci,
+                "--target", str(round(target)), "--floor", str(round(floor))]
     else:
         raise ValueError("Unknown fan control mode")
     return ["/usr/bin/pkexec", "/usr/bin/env", f"ARC_GPU_BDF={pci}",
@@ -174,6 +197,10 @@ def tuning_state(pci, *, sysfs=Path("/sys/bus/pci/devices")):
         return {"supported": False, "reason": "This GPU does not expose the supported Xe clock controls."}
     result = {"supported": True, "pci": pci, "clock_min": current_low, "clock_max": current_high,
               "clock_low": low, "clock_high": high, "power_w": None, "profiles": []}
+    try:
+        result["throttle"] = (freq / "throttle/reasons").read_text().strip()
+    except OSError:
+        result["throttle"] = None
     for hwmon in sorted((root / "hwmon").glob("hwmon*")):
         try:
             if (hwmon / "name").read_text().strip() == "xe":

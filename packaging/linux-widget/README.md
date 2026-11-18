@@ -57,7 +57,62 @@ remain unavailable with a reason. Fan and power controls only work where the act
 existing system authorization support them; this bundle does not install privileged helpers or
 change system policy.
 
+### Optional Intel Xe VRAM temperature fan target
+
+On Xe drivers exposing both VRAM temperature sensors and writable `pwm1`, the fan dialog offers
+an 80°C Performance target and an adjustable Custom VRAM target (65–95°C). The controller samples
+VRAM channels and GPU package temperature every two seconds, raises fan duty as temperatures
+approach the target, and restores the prior fan mode when stopped or when the widget exits. This is
+a best-effort userspace control, not a hard temperature limit. It requires no reboot or driver
+reload; install the helper once, then restart the widget:
+
+```sh
+sudo install -o root -g root -m 0755 tools/gputaskman-vram-fan-target /usr/local/bin/gputaskman-vram-fan-target
+```
+
+Applying a target prompts for administrator authorization. Closing the widget stops the live
+controller and restores its previous fan mode. If VRAM sensor readings become unavailable, the
+controller stops and attempts to restore that mode.
+
+The **Stop temperature control** button restores the previous curve. In Custom VRAM target mode,
+the temperature and minimum-duty controls also update the running controller without another
+authorization prompt. The controller exits if the widget disconnects or stops responding.
+
+### Widget v0.2.0
+
+The widget version is shown beneath the window title, in the top-panel menu, and by
+`gputaskman-widget --version`. It is separate from the backend's version.
+
+For brief Xe tachometer zero reports, the top fan block retains the last non-zero sample for up
+to eight seconds and visibly labels its age. The raw zero remains in the sensor details and
+alarm evaluation. This avoids the brief display dropout while preserving the driver's reading;
+it does not repair the driver's tachometer. The clock block explains why an idle GPU may report
+0 MHz despite a configured active minimum.
+
 ## Source and status
+
+### Widget v2.1.0
+
+**Power & clocks** now includes Performance, Quiet, Efficiency and a saved custom profile per GPU.
+Loading or saving a preset only edits local fields. **Start temporary profile** requests authorization
+once and applies the selected clocks, power profile, power cap and VRAM-target fan control. Stop,
+widget exit, lost snapshots, or a disconnected control pipe restore the entry settings.
+
+Workload mode activates when reported GPU load or a visible process's GPU engine load reaches 5%.
+After 15 seconds without that evidence, it restores the entry settings and remains armed. Model
+residency alone never activates it. Protected or unavailable activity counters can prevent activation.
+
+The optional thermal power guard lowers the session cap by 5 W every four seconds if VRAM exceeds
+the target by more than 1°C while fan duty is essentially full. It stays above your chosen minimum.
+After cooling 5°C below target it cautiously restores power, at most 5 W every twenty seconds,
+up to the selected session cap. This remains best effort, not a guaranteed temperature limit.
+
+The dialog shows driver throttle reasons and recent device telemetry averages. **Save comparison
+snapshot** writes bounded telemetry, settings and source labels to
+`~/.local/state/gputaskman/comparisons/`. It starts no workload and measures no model throughput.
+The v2.1.0 update uses the already-loaded driver and requires only a widget relaunch. Synthetic
+tests cover session restoration and guard behavior; the new profile/guard path has not been
+stress-tested on the owner's B65.
 
 This is a community side project, not part of the upstream TUI release. Source and updates:
 [Prada369/gputaskman, `sideproject/linux-widget-package`](https://github.com/Prada369/gputaskman/tree/sideproject/linux-widget-package/packaging/linux-widget).
