@@ -69,6 +69,21 @@ class SummaryTests(unittest.TestCase):
         # a slow interval is not a gap: 5 s samples with one 30 s hiccup stay one run
         self.assertEqual(len(split_runs([snap(t) for t in (0, 5, 10, 40, 45)])), 1)
 
+    def test_same_name_adapters_have_separate_vram_summaries(self):
+        first = dict(snap(0, used=GiB), adapter={"pci_address": [1, 0, 0], "pci_domain": 0})
+        second = dict(snap(1, used=3 * GiB), adapter={"pci_address": [1, 0, 0], "pci_domain": 1})
+        third = dict(snap(2, used=5 * GiB), adapter={"pci_address": [2, 0, 0], "pci_domain": 1})
+
+        runs = summarize([first, second, third])["runs"]
+        self.assertEqual([r["metrics"]["vram_used"]["avg"] for r in runs], [GiB, 3 * GiB, 5 * GiB])
+
+    def test_runs_keep_pci_matches_and_older_snapshots_together(self):
+        first = dict(snap(0), adapter={"pci_address": [1, 0, 0], "luid": 1})
+        second = dict(snap(1), adapter={"pci_address": [1, 0, 0], "luid": 2})
+        older = snap(2)
+
+        self.assertEqual(split_runs([first, second, older]), [[first, second, older]])
+
     def test_load_skips_lines_that_do_not_parse(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "s.jsonl")

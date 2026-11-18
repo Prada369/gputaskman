@@ -4,7 +4,7 @@ Like `diff`, this only reads a saved file and collects nothing. Readings are tak
 skipped (never counted as 0), a metric with no readings is left out, and values are never capped or adjusted.
 Per-process memory comes only from the measured `vram_bytes`, so nothing inferred is summed.
 
-`record` appends, so one file can hold several recordings. A new run starts when the GPU or backend changes,
+`record` appends, so one file can hold several recordings. A new run starts when the adapter or backend changes,
 when `taken` goes backwards, or when two samples are further apart than RUN_GAP_FACTOR times the file's
 median interval (and at least RUN_GAP_MIN seconds). Each run is summarized on its own.
 """
@@ -16,6 +16,7 @@ import math
 import statistics
 import time
 
+from .diff import check_adapter
 from .llm import gb
 
 RUN_GAP_FACTOR = 10
@@ -71,13 +72,23 @@ def load(path: str) -> tuple[list[dict], int]:
     return samples, skipped
 
 
+def _same_gpu(before: dict, after: dict) -> bool:
+    if (before.get("gpu"), before.get("backend")) != (after.get("gpu"), after.get("backend")):
+        return False
+    try:
+        check_adapter(before, after)
+    except ValueError:
+        return False
+    return True
+
+
 def split_runs(samples: list[dict]) -> list[list[dict]]:
     gaps = [b["taken"] - a["taken"] for a, b in zip(samples, samples[1:]) if b["taken"] > a["taken"]]
     limit = max(RUN_GAP_MIN, RUN_GAP_FACTOR * statistics.median(gaps)) if gaps else RUN_GAP_MIN
     runs: list[list[dict]] = []
     for s in samples:
         prev = runs[-1][-1] if runs else None
-        if (prev is None or (s.get("gpu"), s.get("backend")) != (prev.get("gpu"), prev.get("backend"))
+        if (prev is None or not _same_gpu(prev, s)
                 or not 0 <= s["taken"] - prev["taken"] <= limit):
             runs.append([])
         runs[-1].append(s)
@@ -180,7 +191,8 @@ def to_text(d: dict, top: int = TOP) -> str:
     if d["skipped_lines"]:
         out.append(f"{d['skipped_lines']} line(s) that do not parse as a snapshot were skipped.")
     if len(d["runs"]) > 1:
-        out.append(f"A new run starts when the GPU changes or samples are more than {RUN_GAP_FACTOR}x the usual "
+        out.append(f"A new run starts when the GPU adapter or backend changes, the clock goes backwards, "
+                   f"or samples are more than {RUN_GAP_FACTOR}x the usual "
                    f"interval (at least {RUN_GAP_MIN:g} s) apart.")
     out.append("Values are shown as recorded; unknown readings are skipped, not counted as 0.")
     for i, r in enumerate(d["runs"], 1):

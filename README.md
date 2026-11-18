@@ -866,6 +866,7 @@ do not parse, such as a last line cut short, are skipped and counted.
 Because `record` appends, one file can hold several recordings, and `summary` reports each run on its own.
 A new run starts when the GPU or backend changes, when `taken` goes backwards (a clock change), or when
 two samples are further apart than ten times the file's median interval or 60 seconds, whichever is longer.
+Consecutive snapshots with conflicting adapter identities start separate runs even if the GPUs share a name.
 A slow sample or two stays inside its run; recording again tomorrow into the same file is a second run.
 
 ### Replaying a recording
