@@ -47,6 +47,12 @@ def llm(n_ctx, kv, exact=False):
 
 
 class MatchTests(unittest.TestCase):
+    def test_unresolved_nvml_pids_are_not_paired_by_placeholder_name(self):
+        before = [proc(7, "(unresolved host PID)", host="nvml")]
+        after = [proc(9, "(unresolved host PID)", host="nvml")]
+        self.assertEqual({how for _, _, how in match(before, after)}, {"gone", "new"})
+        self.assertIn("H:9", to_text(diff(snap(before, 0, 0), snap(after, 0, 0))))
+
     def test_pid_then_name_and_ports_then_unique_name(self):
         before = [proc(1, "a.exe"), proc(2, "llama-server", ports=[8080]), proc(3, "solo.exe")]
         after = [proc(1, "a.exe"), proc(20, "llama-server", ports=[8080]), proc(30, "solo.exe")]

@@ -91,8 +91,8 @@ class ProcGpu:
     # False when per-process VRAM is unavailable. Native NVML may still report engines independently;
     # WSL charges every Linux process's VRAM and engine activity to the Windows VM worker.
     attributed: bool = True
-    # WSL: VRAM matched from the VM's GPU contexts (see wslhost.ContextTracker). An exact counter value whose
-    # owner is inferred; kept apart from `dedicated` so it isn't counted twice next to the WSL VM row.
+    # VRAM matched from WSL VM contexts or container host PIDs. An exact counter value whose owner is
+    # inferred; kept apart from `dedicated` so it isn't counted twice next to the measured host row.
     inferred: float | None = None
     inferred_by: str = ""  # "consistent" (candidates agree on bytes) | "order" (heuristic owner)
     # DRM fdinfo (amdgpu, Intel): resident bytes in every buffer this process can reach, shared ones included. A reference

@@ -461,7 +461,7 @@ class MemoryTests(unittest.TestCase):
             c.drm_card = None
             c.gpu_index, c.scan_budget, c.host, c.host_status = 0, scan_budget, None, ""
             c.nvml = Mock(ok=False)
-            c.counters = Mock(outside={})
+            c.counters = Mock(host_procs={})
             c.counters.sample.return_value = (
                 {1: procs}, {1: AdapterGpu(dedicated=351 * MiB, shared=0)})
             c.inspector, c.prober = Mock(), Mock()
@@ -489,7 +489,7 @@ class MemoryTests(unittest.TestCase):
         c.gpu_index, c.scan_budget, c.host, c.host_status = 0, None, None, ""
         c.nvml = Mock(ok=False)
         c.amdsmi = Mock(status="")
-        c.counters = Mock(outside={})
+        c.counters = Mock(host_procs={})
         c.counters.sample.return_value = ({}, {})
         c.inspector, c.prober = Mock(), Mock()
         reason = "AMD SMI unavailable; install matching WSL AMD SMI and ROCDXG packages yourself."
@@ -511,7 +511,7 @@ class MemoryTests(unittest.TestCase):
         c.adapters = [c.adapter]
         c.gpu_index, c.scan_budget, c.host, c.host_status = 0, None, None, ""
         c.nvml = Mock(ok=False)
-        c.counters = Mock(outside={})
+        c.counters = Mock(host_procs={})
         c.counters.sample.return_value = (
             {0x4bf1: {4: ProcGpu(dedicated=GiB, engines={"compute": 10})}},
             {0x4bf1: AdapterGpu(dedicated=GiB, shared=0)})
@@ -546,7 +546,7 @@ class MemoryTests(unittest.TestCase):
                 c.nvml.sample.return_value = []
                 c.adl, c.amdsmi = Mock(), Mock()
                 c.adl.sample.return_value = amd_telemetry
-                c.counters = Mock(outside={})
+                c.counters = Mock(host_procs={})
                 c.counters.sample.return_value = ({1: {}}, {1: AdapterGpu(dedicated=0, shared=0)})
                 c.inspector, c.prober = Mock(), Mock()
                 with patch("gputaskman.collector.BACKEND", "wddm"):
@@ -560,7 +560,7 @@ class MemoryTests(unittest.TestCase):
         c.adapters = [c.adapter]
         c.gpu_index, c.scan_budget, c.host, c.host_status = 0, None, None, ""
         c.nvml = Mock(ok=False)
-        c.counters = Mock(outside={})
+        c.counters = Mock(host_procs={})
         c.counters.sample.return_value = (
             {1: {}}, {1: AdapterGpu(util_gpu=41.6)})
         c.inspector, c.prober = Mock(), Mock()
@@ -579,7 +579,7 @@ class MemoryTests(unittest.TestCase):
         c.gpu_index, c.scan_budget, c.host, c.host_status = 0, None, None, ""
         c._windows_driver = "32.0.163.2"
         c.nvml = Mock(ok=False)
-        c.counters = Mock(outside={})
+        c.counters = Mock(host_procs={})
         c.counters.sample.return_value = ({1: {}}, {1: AdapterGpu(util_gpu=41.6)})
         c.inspector, c.prober = Mock(), Mock()
         with patch("gputaskman.collector.BACKEND", "wddm"):
@@ -595,7 +595,7 @@ class MemoryTests(unittest.TestCase):
         c.adapters = [adapter]
         c.gpu_index, c.scan_budget, c.host, c.host_status = 0, None, None, ""
         c.nvml = Mock(ok=False)
-        c.counters = Mock(outside={})
+        c.counters = Mock(host_procs={})
         c.counters.sample.return_value = (
             {1: {42: ProcGpu(dedicated=memory, shared=0, committed=memory)}},
             {1: AdapterGpu(dedicated=0, shared=memory, util_gpu=41.6)})
@@ -636,7 +636,7 @@ class MemoryTests(unittest.TestCase):
         c.adapters = [adapter]
         c.gpu_index, c.scan_budget, c.host, c.host_status = 0, None, None, ""
         c.nvml = Mock(ok=False)
-        c.counters = Mock(outside={})
+        c.counters = Mock(host_procs={})
         c.counters.sample.return_value = (
             {1: {42: ProcGpu(dedicated=memory, shared=0, committed=memory)}},
             {1: AdapterGpu(dedicated=0, shared=memory, util_gpu=41.6)})
@@ -667,7 +667,7 @@ class MemoryTests(unittest.TestCase):
         c.adapters = [adapter]
         c.gpu_index, c.scan_budget, c.host, c.host_status = 0, None, None, ""
         c.nvml = Mock(ok=False)
-        c.counters = Mock(outside={})
+        c.counters = Mock(host_procs={})
         c.counters.sample.return_value = (
             {1: {
                 42: ProcGpu(dedicated=5 * MiB, shared=0),
@@ -690,7 +690,7 @@ class MemoryTests(unittest.TestCase):
         c.adapters = [adapter]
         c.gpu_index, c.scan_budget, c.host, c.host_status = 0, None, None, ""
         c.nvml = Mock(ok=False)
-        c.counters = Mock(outside={})
+        c.counters = Mock(host_procs={})
         c.counters.sample.return_value = (
             {1: {42: ProcGpu(dedicated=5 * MiB, shared=0, available={"dedicated", "committed", "engine"})}},
             {1: AdapterGpu(dedicated=0, shared=5 * MiB)})
@@ -711,7 +711,7 @@ class MemoryTests(unittest.TestCase):
         c.gpu_index, c.scan_budget, c.host, c.host_status = 0, None, None, ""
         c.nvml = Mock(ok=True, driver="", cuda_version="")
         c.nvml.sample.return_value = []
-        c.counters = Mock(outside={})
+        c.counters = Mock(host_procs={})
         c.counters.sample.return_value = ({1: {}}, {1: AdapterGpu(dedicated=GiB, shared=0)})
         c.inspector, c.prober = Mock(), Mock()
         with patch("gputaskman.collector.BACKEND", "wddm"), \
@@ -729,7 +729,7 @@ class MemoryTests(unittest.TestCase):
         c.adapters = [c.adapter]
         c.gpu_index, c.scan_budget, c.host, c.host_status = 0, None, None, ""
         c.nvml = Mock(ok=False)
-        c.counters = Mock(outside={})
+        c.counters = Mock(host_procs={})
         c.counters.sample.return_value = (
             {2: {4: ProcGpu(dedicated=GiB)}},
             {2: AdapterGpu(dedicated=GiB, shared=GiB), 1: AdapterGpu(dedicated=0, shared=0)})
@@ -747,7 +747,7 @@ class MemoryTests(unittest.TestCase):
         c.adapters = [c.adapter]
         c.gpu_index, c.scan_budget, c.host, c.host_status = 0, None, None, ""
         c.nvml = Mock(ok=False)
-        c.counters = Mock(outside={})
+        c.counters = Mock(host_procs={})
         c.counters.sample.return_value = ({1: {}}, {})
         c.inspector, c.prober = Mock(), Mock()
         with patch("gputaskman.collector.BACKEND", "wddm"):
@@ -941,7 +941,7 @@ class MemoryTests(unittest.TestCase):
         c.adapters = [c.adapter]
         c.gpu_index, c.scan_budget, c.host, c.host_status = 0, None, None, ""
         c.nvml = Mock(ok=False)
-        c.counters = Mock(outside={}, fallback_counters={"dedicated"})
+        c.counters = Mock(host_procs={}, fallback_counters={"dedicated"})
         c.counters.sample.return_value = ({1: {}}, {1: AdapterGpu(dedicated=512 * MiB, shared=0)})
         c.inspector, c.prober = Mock(), Mock()
         with patch("gputaskman.collector.BACKEND", "wddm"):
@@ -1429,7 +1429,7 @@ class PathArgumentTests(unittest.TestCase):
         c.adapters = [c.adapter]
         c.gpu_index, c.scan_budget, c.host, c.host_status = 0, None, None, ""
         c.nvml = Mock(ok=False)
-        c.counters = Mock(outside={})
+        c.counters = Mock(host_procs={})
         c.counters.sample.return_value = (
             {1: {123: ProcGpu(dedicated=8 * GiB, shared=0)}},
             {1: AdapterGpu(dedicated=8 * GiB, shared=0)})
@@ -2401,7 +2401,7 @@ class LlmWantedTests(unittest.TestCase):
             kind=kind,
             detail=ProcDetail(123, cmdline=["--diffusion-model"] if diffusion else [],
                               models=[MappedModel(m, 1, 0, True) for m in models]),
-            gpu=SimpleNamespace(available=set(available)),
+            gpu=ProcGpu(available=set(available)),
         )
 
     def test_spill_backend_needs_both_counters(self):
@@ -2669,6 +2669,38 @@ class UiTests(unittest.IsolatedAsyncioTestCase):
                 hdr = app.query_one("#inspector", Static).content.renderables[0].plain
                 self.assertIn("compute 65%", hdr)
                 self.assertIn("shared(RAM) n/a", hdr)
+
+    async def test_container_guess_keeps_host_measurement_separate_in_ui(self):
+        s = snapshot()
+        s.backend = "nvml"
+        local = ProcGpu(attributed=False, inferred=3 * GiB, inferred_by="order", available=set(),
+                        engine_reason="NVML engines are measured for a host PID; its local owner is unresolved.")
+        detail = ProcDetail(10, "python3", models=[MappedModel("m.gguf", GiB, None, True)])
+        with patch("gputaskman.llm.read_gguf",
+                   return_value=GgufInfo("m.gguf", GiB, 3, tensor_bytes=GiB)):
+            view = build_view(detail, 0, 0, None, attributed=False)
+        s.procs = [ProcRow(10, "python3", "AI", local, detail, view),
+                   ProcRow(9000, "(unresolved host PID)", "external",
+                           ProcGpu(dedicated=3 * GiB, engines={"compute": 75}),
+                           ProcDetail(9000, "(unresolved host PID)"), host=True, origin="nvml")]
+        with patch.object(GpuTaskManager, "poll"), patch("gputaskman.app.BACKEND", "nvml"), \
+                patch("gputaskman.app.stacked_bar", wraps=stacked_bar) as bar:
+            app = GpuTaskManager()
+            app.selected_key = "10"
+            async with app.run_test(size=(220, 50)) as pilot:
+                app.apply(s)
+                await pilot.pause()
+                table = app.query_one("#procs")
+                self.assertEqual(table.get_cell("10", "VRAM").plain, "3.00 GB?")
+                self.assertEqual(table.get_cell("10", "GPU%").plain, "n/a")
+                self.assertEqual(table.get_cell("n9000", "VRAM").plain, "3.00 GB")
+                self.assertEqual(table.get_cell("n9000", "GPU%").plain, "75")
+                text = "\n".join(getattr(line, "plain", "") for line in
+                                 app.query_one("#inspector", Static).content.renderables)
+                self.assertIn("local owner is unresolved", text)
+                self.assertIn("VRAM total is unknown", text)
+                self.assertEqual(bar.call_args.args[1], GiB)  # estimates, not the guessed 3 GiB budget
+                self.assertEqual(s.attributed, 3 * GiB)
 
     async def test_unknown_process_memory_preserves_unattributed_adapter_usage(self):
         s = snapshot()

@@ -159,7 +159,7 @@ Ascend container and PID-namespace behavior is not validated.
 | | Native Linux | WSL, interop on (default) | WSL, interop off or `--no-host` |
 |---|---|---|---|
 | Device totals, load, temperature, power, clocks | NVML / DRM | NVML / AMD SMI | NVML / AMD SMI |
-| Per-process VRAM | NVML, measured (in a container: owner matched, `*` or `?`) | Matched from the Windows host, marked `*` or `?` | `n/a` |
+| Per-process VRAM | NVML, measured by host PID; in a container, local-owner guesses are separate (`?`) | Matched from the Windows host, marked `*` or `?` | `n/a` |
 | Per-process GPU load | NVML (SM, encoder, decoder) | `n/a` for Linux processes | `n/a` |
 | Spill / Paged | Not available (blank) | Windows rows only | Not available |
 | WSL VM total, Windows apps | — | Windows host counters | — |
@@ -179,14 +179,34 @@ PIDs, which mean nothing in the container's `/proc`, and the container cannot se
 its own processes. gputaskman pairs NVML's unresolved PIDs with the container's processes that
 have `libcuda.so` mapped (NVML-only tools such as `nvidia-smi` open the same device files but
 never load libcuda). Both PID namespaces number processes in creation order, so the pairing is by
-order: `*` when the counts match or a process starting while gputaskman runs pins it, `?` when
-NVML lists more compute processes than the container has (another container on the same GPU).
-Per-process GPU load follows the match. Anything left over is shown as `H:<pid>`,
-*outside this container* (for example, the host's display server), and is never looked up locally.
+order: `?` marks an order guess, even when candidate counts match or a new NVML PID and local
+candidate appear together while gputaskman runs. Those starts keep a pairing stable, but do not prove
+ownership. A device handle and mapped `libcuda.so` do not prove that a process owns a live NVML context,
+and another container may have the same number of GPU processes. `*` is reserved for a unique ownership
+explanation or when all viable matches give exactly the same bytes.
+
+Guessed local rows carry `vram_attributed: false`, `vram_bytes: null` and the candidate's bytes in
+`vram_inferred_bytes` with `vram_inferred_by: "order"`. They are display hints, not measured process
+peaks in `summary` or a budget for a model breakdown. Local GPU% and engines are `null` with an
+`engine_unavailable_reason`: the host's engine readings do not establish which local process did the work.
+Independently evidenced model files still supply metadata and model/flag-based estimates, with an
+explicitly unknown process VRAM total; neither those estimates nor the mapped file prove GPU ownership.
+Every NVML host PID is retained as `H:<pid>` / `(unresolved host PID)` (`host: "nvml"` in JSON), never
+looked up locally. Those rows preserve measured memory and engine counters under the driver's actual
+PID. Only their measured bytes enter the attributed total, once, not again through a local guess.
+Hidden host memory leaves that total unknown. These host processes may be local to this container,
+in another container, or on the host; an unmatched PID is not proof that it is outside this container.
+If PID-namespace detection fails, the same conservative split applies: an existing local PID with the
+same number does not prove that it is NVML's host process.
 
 Live check, on a Vast.ai Docker container (Ubuntu 22.04, RTX 3060 Ti, driver 580.82.09): two
 PyTorch jobs already running at startup, a third started while watching, and one killed, were all
 matched to the right container PIDs with their NVML sizes (1.12, 2.52 and 1.59 GB) and live GPU%.
+The startup matches are order guesses; this check does not validate the ambiguous equal-count,
+cross-container case. A process started while watching remains an order guess; its pair is merely
+kept stable by the observed start. The earlier live GPU% values followed guessed matches; they are now
+retained only under the measured host PID. The revised dual-row presentation is covered by synthetic
+tests, not a new hardware validation.
 An Ollama `qwen3:0.6b` runner was detected and named from Ollama's store with `api+mapped+cmdline`
 evidence, its weights / KV-cache / compute split shown, and the TUI rendered.
 
@@ -1259,7 +1279,7 @@ file paths, but model and process names still require review.
 | WSL: Linux rows show `?` | Processes were running before gputaskman started; they become `*` with evidence (see the matching table) |
 | Linux: a GPU process is missing | Processes owned by other users need `sudo`; Docker and other WSL distros are not visible from this one |
 | Linux: NVML process list failed | The attributed total is unknown; check the reported NVML error and retry after restoring process-list access |
-| Linux container: `H:<pid>` rows | GPU processes outside this container's PID namespace (host or other containers); NVML sees them, the container cannot name them |
+| Linux container: `H:<pid>` rows | NVML's host PIDs with unresolved local ownership; possibly this container, another container, or the host. Measured counters stay here; local order guesses are separate |
 | Missing DLLs or model details | Protected processes may deny inspection; basic counters can still work without elevation |
 | No exact LLM breakdown | Enable compatible buffer logging, or use the GGUF estimate; API/log access is optional |
 | The screen looks cramped | Widen the terminal or use `--once` / `--json` |

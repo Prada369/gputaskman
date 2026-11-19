@@ -870,7 +870,7 @@ def _pid(proc: dict) -> str:
     label = "?" if pid is None else str(pid)
     if host == "windows":
         return f"W:{label}"
-    if host == "outside":
+    if host in ("outside", "nvml"):
         return f"H:{label}"
     return label
 
@@ -894,7 +894,7 @@ def _shared(snapshot: dict, proc: dict) -> str:
         return gb(number)
     backend = snapshot.get("backend")
     host = proc.get("host")
-    applies = backend == "wddm" or host == "windows" or (backend == "drm" and host not in ("windows", "outside"))
+    applies = backend == "wddm" or host == "windows" or (backend == "drm" and host not in ("windows", "outside", "nvml"))
     return "n/a" if applies else ""
 
 

@@ -352,6 +352,12 @@ class DisplayTests(unittest.TestCase):
         self.assertIn("inferred", cells[7])
         self.assertIn("* matched", describe(_view(), Playback(1, [1.0], timed=False), snap(processes=[host_pid])))
 
+    def test_unresolved_nvml_host_pid_keeps_its_namespace_label(self):
+        host_pid = proc(pid=9000, name="(unresolved host PID)", host="nvml", vram=3 * GiB)
+        cells = process_rows(snap(backend="nvml", processes=[host_pid]))[0][0]
+        self.assertEqual(cells[0], "H:9000")
+        self.assertEqual(cells[3], "3.00 GB")
+
     def test_malformed_inferred_by_renders_unmarked(self):
         for by in (["order"], {"a": 1}, 3, "other"):
             row = proc(vram=None, vram_attributed=False, vram_inferred_bytes=1, vram_inferred_by=by)

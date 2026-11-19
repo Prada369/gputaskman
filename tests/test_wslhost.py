@@ -13,7 +13,7 @@ from gputaskman import wslhost
 from gputaskman.collector import Collector, ProcRow, Snapshot
 from gputaskman.dxgi import Adapter, VENDOR_AMD
 from gputaskman.llm import LlmView
-from gputaskman.pdh import AdapterGpu, ProcGpu
+from gputaskman.pdh import ENGINE_UNAVAILABLE_REASON, AdapterGpu, ProcGpu
 from gputaskman.procinfo import MappedModel, ProcDetail
 from gputaskman.report import to_dict, to_text
 from gputaskman.wslhost import ContextTracker, HostSample, HostStream, match_adapter, parse_line
@@ -492,6 +492,32 @@ class HostRowTests(unittest.TestCase):
                      if row.lstrip().startswith("W:")}
         self.assertEqual(text_rows["W:42"][-4:], ["n/a", "N/A", "N/A", "15"])
 
+    def test_sample_reports_invalid_windows_host_engines_in_wsl(self):
+        sample = parse_line(line([
+            ["dedicated usage", LUID, GiB],
+            ["local usage", f"pid_42_{LUID}", GiB],
+            ["utilization percentage", f"pid_42_{LUID}_eng_0_engtype_3D", 1100],
+        ], {"42": "dwm"}), now=time.time())
+        c = self.collector(FakeStream(sample))
+        c.adapter = Adapter(RTX, "NVIDIA", 0x10DE, 24 * GiB, 0, False)
+        c.adapters, c.gpu_index, c.scan_budget = [c.adapter], 0, None
+        c.host_status = ""
+        c.nvml = Mock(ok=False)
+        c.counters = Mock(host_procs={})
+        c.counters.sample.return_value = ({RTX: {}}, {RTX: AdapterGpu(dedicated=GiB)})
+        c.inspector = Mock()
+        with patch.object(collector_mod, "BACKEND", "wsl"):
+            snap = c.sample()
+        row, = snap.procs
+        self.assertEqual((row.pid, row.origin, row.gpu.engine_reason), (42, "windows", ENGINE_UNAVAILABLE_REASON))
+        self.assertIn("Windows GPU engine utilization counters outside 0-1000%", snap.counter_status)
+        self.assertIn(snap.counter_status, to_text(snap))
+        data = to_dict(snap)
+        self.assertEqual(data["counter_status"], snap.counter_status)
+        self.assertIsNone(data["processes"][0]["engines"])
+        self.assertEqual(data["processes"][0]["vram_bytes"], GiB)
+        c.inspector.get.assert_not_called()
+
     def test_linux_process_gets_matched_vram(self):
         # contexts newest first: this monitor's own 0-byte NVML context, then the workload (3 GB)
         busy = line([["local usage", f"pid_24820_{LUID}", v * GiB] for v in (0.0, 3.0)]
@@ -551,7 +577,7 @@ class HostRowTests(unittest.TestCase):
         c.adapters, c.gpu_index, c.scan_budget = [c.adapter], 0, Collector.SCAN_BUDGET
         c.host_status = ""
         c.nvml = Mock(ok=False, driver="", cuda_version="")
-        c.counters = Mock(outside={})
+        c.counters = Mock(host_procs={})
         c.counters.sample.return_value = (
             {RTX: {pid: ProcGpu(attributed=False) for pid in range(1, big_pid + 1)}},
             {RTX: AdapterGpu(dedicated=total)})
@@ -596,6 +622,8 @@ class HostRowTests(unittest.TestCase):
         self.assertEqual(row.gpu.inferred_by, "order")
         self.assertIn("3.00 GB?", to_text(snap))
         self.assertIn("order guess", to_text(snap))
+        self.assertIn("WSL may promote to * when its context tracker uniquely", to_text(snap))
+        self.assertIn("Container process/NVML start correlation only keeps a pair stable", to_text(snap))
 
     def test_split_reason_is_reported(self):
         snap = self.snap()  # SAMPLE has 2 vmwp contexts; add Linux rows until there are more holders
