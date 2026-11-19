@@ -744,6 +744,23 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(gpu.gpu_pct, 10)
         self.assertFalse(gpu.paged_available)
 
+    def test_engine_only_process_does_not_claim_unavailable_vram_attribution(self):
+        counters = GpuCounters.__new__(GpuCounters)
+        counters._query = None
+        counters.fallback_counters = {"dedicated"}
+        data = {"engine": [("pid_42_luid_0x0_0x1_phys_0_eng_0_engtype_Compute", 10.0)]}
+        with patch.object(counters, "_read", side_effect=lambda key: data.get(key, [])), \
+                patch("gputaskman.pdh._pdh", SimpleNamespace(PdhCollectQueryData=lambda query: 0)):
+            processes, _ = counters.sample()
+        s = snapshot()
+        s.procs = [ProcRow(42, "compute.exe", "compute", processes[1][42], ProcDetail(42, "compute.exe"))]
+        row = to_dict(s)["processes"][0]
+        self.assertFalse(row["vram_attributed"])
+        self.assertIsNone(row["vram_bytes"])
+        self.assertIsNone(row["wddm_dedicated_usage_bytes"])
+        self.assertEqual(row["gpu_pct"], 10)
+        self.assertIsNone(row["paged_out_bytes"])
+
     def test_invalid_engine_counter_makes_process_unknown_but_keeps_ordinary_overshoot(self):
         counters = GpuCounters.__new__(GpuCounters)
         counters._query = None
