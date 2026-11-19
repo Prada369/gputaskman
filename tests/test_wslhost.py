@@ -278,6 +278,12 @@ class TrackerTests(unittest.TestCase):
         self.check(self.step(t, [2.0, 0.0], [("S", 900), ("P", 2000)]), {"P": (2.0, "*")})
         self.check(self.step(t, [2.0, 0.0], [("S", 900), ("P", 2000)]), {"P": (2.0, "*")})
 
+    def test_immediately_reused_pid_does_not_keep_its_old_context(self):
+        t = self.make()
+        self.check(self.step(t, [0.0, 1.0], [("S", 900), ("P", 10)]), {"P": (1.0, "*")})
+        self.check(self.step(t, [0.0, 1.0], [("S", 900), ("P", 2000)]), {})
+        self.check(self.step(t, [2.0, 0.0, 1.0], [("S", 900), ("P", 2000)]), {"P": (2.0, "*")})
+
     def test_already_running_processes_are_guesses_until_evidence(self):
         t = self.make()
         h = [("S", 900), ("C", 14), ("B", 13)]
