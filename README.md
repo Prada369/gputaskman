@@ -779,8 +779,11 @@ is listed as evidence that the process opened or named it, not as GPU growth. Th
 
 Processes are paired by PID, then by name and listening ports, then by a unique name, because a
 model reload often restarts the server under a new PID. A process missing from one snapshot shows
-`not listed`, not zero: it was not running or used too little GPU to be listed. Processes that
-moved by less than 16 MB are hidden from the text output but included in `--json`.
+`not listed`, not zero: it was not running or used too little GPU to be listed. Small numeric
+changes below 16 MB don't make a process appear in the text output on their own. If a measured or
+inferred process memory counter becomes known or unknown, the text shows both readings and `N/A`
+for the change rather than subtracting from zero. `--json` includes all processes and uses `null`
+when a delta can't be calculated.
 
 A PID is not an identity, because both Windows and Linux reuse them. Each process in `--json` carries
 `started_at` (its creation time in Unix seconds, taken from data the monitor already reads). The same

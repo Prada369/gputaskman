@@ -273,9 +273,9 @@ def _moved(c: dict) -> bool:
 def _changed(p: dict) -> bool:
     if p["match"] in ("new", "gone"):
         return True
-    if any(abs(c["delta"] or 0) >= NOISE for c in p["measured"].values()):
+    if any(_moved(c) for c in p["measured"].values()):
         return True
-    if abs(p["inferred"]["vram_inferred_bytes"]["delta"] or 0) >= NOISE:
+    if _moved(p["inferred"]["vram_inferred_bytes"]):
         return True
     r = p["runtime"]
     # Remainder segments follow the measured total, so they move with every sample; apply the same threshold.
@@ -321,13 +321,21 @@ def to_text(d: dict) -> str:
 
     for p in procs:
         detail = []
-        swapped = p["measured"]["graphics_swapped_bytes"]
-        delta = swapped["delta"]  # a measured 0 on a new row is not a change
-        sides = [v for v in (swapped["before"], swapped["after"])
-                 if isinstance(v, (int, float)) and not isinstance(v, bool)]
-        if (delta is not None and abs(delta) >= NOISE) or (delta is None and any(abs(v) >= NOISE for v in sides)):
+        measured = p["measured"]
+        paired = p["match"] not in ("new", "gone")
+        swapped = measured["graphics_swapped_bytes"]
+        # A new or gone process has no reading to compare; keep its large-value detail only.
+        if _moved(swapped) and (paired or any(abs(v) >= NOISE for v in (swapped["before"], swapped["after"])
+                                              if isinstance(v, (int, float)))):
             detail.append(f"  compressed graphics (footprint swapped)  {_gb(swapped['before'])} -> "
                           f"{_gb(swapped['after'])}  {_signed(swapped['delta'])}")
+        if paired:
+            for key, label in (("shared_bytes", "shared memory"), ("committed_bytes", "committed memory"),
+                               ("paged_out_bytes", "paged-out memory"), ("vram_resident_bytes", "resident VRAM"),
+                               ("gtt_resident_bytes", "resident GTT")):
+                c = measured[key]
+                if c["delta"] is None and _moved(c):
+                    detail.append(f"  {label}  {_gb(c['before'])} -> {_gb(c['after'])}  {_signed(c['delta'])}")
         inf = p["inferred"]["vram_inferred_bytes"]
         if _moved(inf):
             detail.append(f"  inferred VRAM (WSL context match)  {_gb(inf['before'])} -> {_gb(inf['after'])}"
