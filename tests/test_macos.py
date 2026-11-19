@@ -313,6 +313,29 @@ class PollerTests(unittest.TestCase):
         p.set_targets([(812, "a", True)])
         self.assertIsNone(p.get(812, "a"))
 
+    def test_a_result_for_a_pid_reused_during_measurement_is_discarded(self):
+        p = macos.FootprintPoller(clock=lambda: 0.0)
+        p.set_targets([(812, "a", False)])
+
+        def measure_old(pid):
+            p.set_targets([(pid, "b", False)])
+            return 2 * GiB, 0
+
+        with patch.object(p, "measure", side_effect=measure_old) as old:
+            p.poll_once()
+        old.assert_called_once_with(812)
+        self.assertIsNone(p.get(812, "a"))
+        self.assertIsNone(p.get(812, "b"))
+        self.assertNotIn(812, p._due)
+
+        with patch.object(p, "measure", return_value=(GiB, 7)) as replacement:
+            p.poll_once()  # same clock: the old idle deadline must not delay the replacement
+            replacement.assert_called_once_with(812)
+            self.assertEqual(p.get(812, "b"), (GiB, 7))
+            self.assertIsNone(p.get(812, "a"))
+            p.poll_once()
+            replacement.assert_called_once_with(812)  # B now follows its own idle schedule
+
 
 class ProcInfoTests(unittest.TestCase):
     def test_macos_libraries_and_metal_driver(self):
