@@ -490,6 +490,11 @@ second or two until its first measurement; a single failed measurement keeps the
 in a row back off for a minute. Measurements are tied to the process's start time, so a reused PID
 never shows the previous process's numbers.
 
+If the Metal client query fails or times out, per-process GPU readings are unavailable for that
+refresh. JSON reports `attributed: null` with a reason in `counter_status`; a successful empty
+query still reports `attributed: 0`. Device readings are independent and still appear if available.
+The next successful query resumes GPU rates from the last successful sample.
+
 Metal reports one GPU time per process, with no 3D/compute/copy/video split, so those columns show
 `n/a`; a Metal process above 10% GPU is classified `3D/game` unless something more specific applies
 (AI runtime, browser, compositor). Spill, clocks, power, and temperature are not available, so

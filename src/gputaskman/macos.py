@@ -43,7 +43,10 @@ ALWAYS_SHOWN = {"windowserver"}
 
 def _ioreg(*args: str) -> list | None:
     try:
-        out = subprocess.run(["ioreg", "-a", "-w", "0", "-r", *args], capture_output=True, timeout=5).stdout
+        result = subprocess.run(["ioreg", "-a", "-w", "0", "-r", *args], capture_output=True, timeout=5)
+        if result.returncode != 0:
+            return None
+        out = result.stdout
         return plistlib.loads(out) if out.strip() else []
     except (OSError, subprocess.SubprocessError, plistlib.InvalidFileException, ValueError):
         return None
@@ -264,6 +267,7 @@ class MacCounters:
                  identity=_identity, owner=_owner) -> None:
         self.ok = True
         self.device: NvDevice | None = None
+        self.process_available = False
         self._uid = os.getuid() if uid is None else uid
         # As root footprint can read every process, so every process is measurable (not only uid 0's).
         self._root = (os.geteuid() == 0) if root is None else root
@@ -305,6 +309,7 @@ class MacCounters:
                 adapters[ADAPTER_KEY].dedicated = float(dev.allocated)
             self.device = NvDevice(index=0, name=dev.model, driver_model="Metal", mem_total=physical_memory(),
                                    mem_used=dev.allocated, util_gpu=dev.utilization, source="IOKit")
+        self.process_available = clients is not None
         if clients is None:
             # A failed client query is not an empty client list: preserve the last valid rate baseline and
             # footprint targets so the next successful sample spans the full elapsed interval.

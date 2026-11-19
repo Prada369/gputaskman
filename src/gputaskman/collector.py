@@ -138,8 +138,7 @@ class Snapshot:
     wsl_split: str = ""  # WSL only: why Linux rows have no (inferred) VRAM, when they don't
     # False on an APU (amdgpu iGPU): its GTT is ordinary GPU memory, not spill from a full VRAM.
     shared_is_spill: bool = True
-    counter_status: str = ""  # Windows counter availability or adapter matching problem;
-    # Intel DRM privilege explanation (needs root) when its load/video/power are N/A
+    counter_status: str = ""  # Counter availability or adapter matching explanation
     counter_adapter_matched: bool | None = None  # Windows PDH LUID matched the selected DXGI adapter
     process_memory_available: bool = True
     nv_lost: bool = False  # NVML faulted for this GPU after a disable/re-enable; restart restores it
@@ -421,6 +420,9 @@ class Collector:
         )
 
         snap.host_status = self.host_status
+        if BACKEND == "metal" and not self.counters.process_available:
+            snap.process_memory_available = False
+            snap.counter_status = "Metal client query failed; per-process GPU readings are unavailable."
         if BACKEND == "wsl" and (not self.adapter or self.adapter.vendor_id == VENDOR_AMD):
             snap.counter_status = " ".join(dict.fromkeys(filter(None, (amdsmi_status(), self.amdsmi.status))))
             if self.adapter is None:
