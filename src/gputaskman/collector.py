@@ -419,6 +419,10 @@ class Collector:
             shared_is_spill=not (integrated_gpu or (self.drm_card is not None and self.drm_card.integrated)),
         )
 
+        if BACKEND == "metal" and self.counters.hidden_unmeasured:
+            snap.process_memory_available = False
+            snap.counter_status = "Attributed GPU memory is unknown: some idle Metal clients have unmeasured memory."
+
         snap.host_status = self.host_status
         if BACKEND == "metal" and not self.counters.process_available:
             snap.process_memory_available = False
