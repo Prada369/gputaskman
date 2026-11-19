@@ -179,10 +179,12 @@ PIDs, which mean nothing in the container's `/proc`, and the container cannot se
 its own processes. gputaskman pairs NVML's unresolved PIDs with the container's processes that
 have `libcuda.so` mapped (NVML-only tools such as `nvidia-smi` open the same device files but
 never load libcuda). Both PID namespaces number processes in creation order, so the pairing is by
-order: `*` only when a new NVML PID and local candidate appear together while gputaskman runs;
-otherwise `?` marks an order guess, even when the candidate counts match. A device handle and mapped
-`libcuda.so` do not prove that a process owns a live NVML context, and another container may have the
-same number of GPU processes. Per-process GPU load follows the match. Unmatched NVML processes are
+order: `?` marks an order guess, even when candidate counts match or a new NVML PID and local
+candidate appear together while gputaskman runs. Those starts keep a pairing stable, but do not prove
+ownership. A device handle and mapped `libcuda.so` do not prove that a process owns a live NVML context,
+and another container may have the same number of GPU processes. `*` is reserved for a unique ownership
+explanation or when all viable matches give exactly the same bytes. Per-process GPU load follows the
+match. Unmatched NVML processes are
 shown as `H:<pid>`,
 *outside this container* (for example, the host's display server), and are never looked up locally.
 
@@ -190,7 +192,8 @@ Live check, on a Vast.ai Docker container (Ubuntu 22.04, RTX 3060 Ti, driver 580
 PyTorch jobs already running at startup, a third started while watching, and one killed, were all
 matched to the right container PIDs with their NVML sizes (1.12, 2.52 and 1.59 GB) and live GPU%.
 The startup matches are order guesses; this check does not validate the ambiguous equal-count,
-cross-container case. A process started while watching is paired by start-event evidence.
+cross-container case. A process started while watching remains an order guess; its pair is merely
+kept stable by the observed start.
 An Ollama `qwen3:0.6b` runner was detected and named from Ollama's store with `api+mapped+cmdline`
 evidence, its weights / KV-cache / compute split shown, and the TUI rendered.
 

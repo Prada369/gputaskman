@@ -229,14 +229,14 @@ def has_cuda(pid: int) -> bool:
 class PidMatcher:
     """Containers: NVML reports *host* PIDs, which mean nothing in the container's /proc. Both PID
     namespaces number processes in creation order, so the container's local candidates are matched to
-    NVML's unresolved PIDs by order. A match is sure ("consistent") when a new NVML PID and a new local
-    candidate appear together (kept while both live). Equal counts alone do not prove that the local
-    candidate owns an NVML context: a device handle and mapped libcuda are not proof of context ownership.
-    Other matches pair newest with newest as an "order" guess; leftover NVML PIDs are outside this
-    container (other containers, the host's display server)."""
+    NVML's unresolved PIDs by order. A new NVML PID and a new local candidate appearing together keeps
+    a stable pair while both live, but does not prove ownership: a device handle, mapped libcuda, and
+    correlated starts do not establish that the local process owns that NVML context. Matches remain
+    "order" guesses unless ownership is uniquely established or all viable matches give the same bytes.
+    Leftover NVML PIDs are outside this container (other containers, the host's display server)."""
 
     def __init__(self) -> None:
-        self.pairs: dict[int, int] = {}  # host pid -> local pid, from start events
+        self.pairs: dict[int, int] = {}  # host pid -> stable local candidate pairing
         self.prev_host: set[int] | None = None
         self.prev_local: set[int] = set()
 
@@ -251,7 +251,7 @@ class PidMatcher:
             if len(new_h) == len(new_l) == 1:
                 self.pairs[new_h[0]] = new_l[0]
         self.prev_host, self.prev_local = hs, ls
-        out = {h: (l, "consistent") for h, l in self.pairs.items()}
+        out = {h: (l, "order") for h, l in self.pairs.items()}
         rest_h = sorted((h for h in host if h not in self.pairs), reverse=True)  # newest first
         rest_l = sorted((p for p in local if p not in self.pairs.values()), reverse=True)
         for h, l in zip(rest_h, rest_l):

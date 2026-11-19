@@ -268,7 +268,14 @@ class ContainerTests(unittest.TestCase):
         self.assertEqual((per[547].dedicated, per[547].inferred_by), (3 * GiB, "order"))
         self.assertEqual(c.outside, {})
 
-    def test_extra_outside_compute_is_a_guess_until_a_start_event(self):
+    def test_simultaneous_starts_keep_a_stable_pair_without_proving_ownership(self):
+        matcher = linux.PidMatcher()
+        self.assertEqual(matcher.update([], []), ({}, []))
+        self.assertEqual(matcher.update([9000], [547]), ({9000: (547, "order")}, []))
+        self.assertEqual(matcher.update([9000, 9001], [547, 600]),
+                         ({9000: (547, "order"), 9001: (600, "order")}, []))
+
+    def test_extra_outside_compute_stays_a_guess_after_a_start_event(self):
         fake = FakeNvml(compute=[proc(9000, GiB), proc(2029701, 3 * GiB)])  # 9000: another container
         with patch.object(linux, "N", fake), patch.object(linux, "is_wsl", return_value=False):
             c = linux.LinuxCounters()
@@ -277,7 +284,7 @@ class ContainerTests(unittest.TestCase):
         self.assertEqual(set(c.outside[KEY]), {9000})
         fake.compute.append(proc(2029800, 2 * GiB))  # a new local job starts: one new PID on each side
         per = self.sample(c, fake, holders={547, 600}, cuda={547, 600})
-        self.assertEqual((per[600].dedicated, per[600].inferred_by), (2 * GiB, "consistent"))
+        self.assertEqual((per[600].dedicated, per[600].inferred_by), (2 * GiB, "order"))
 
     def test_bare_metal_is_unchanged(self):
         fake = FakeNvml(compute=[proc(547, GiB)])
