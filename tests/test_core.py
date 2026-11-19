@@ -448,6 +448,41 @@ class DeviceSelectionTests(unittest.TestCase):
 
 
 class MemoryTests(unittest.TestCase):
+    def test_one_shot_scans_every_live_process_and_tui_stays_budgeted(self):
+        adapter = Adapter(1, "RTX", 0x10DE, 16 * GiB, 0, False)
+        procs = {
+            pid: ProcGpu(dedicated=(27 - pid) * MiB, shared=0)
+            for pid in range(1, 27)
+        }
+
+        def make_collector(scan_budget):
+            c = Collector.__new__(Collector)
+            c.adapter, c.adapters = adapter, [adapter]
+            c.drm_card = None
+            c.gpu_index, c.scan_budget, c.host, c.host_status = 0, scan_budget, None, ""
+            c.nvml = Mock(ok=False)
+            c.counters = Mock(outside={})
+            c.counters.sample.return_value = (
+                {1: procs}, {1: AdapterGpu(dedicated=351 * MiB, shared=0)})
+            c.inspector, c.prober = Mock(), Mock()
+            c.inspector.get.side_effect = lambda pid: ProcDetail(pid, f"process-{pid}.exe")
+            c.inspector.needs_scan.return_value = True
+            return c
+
+        one_shot = make_collector(None)
+        with patch("gputaskman.collector.BACKEND", "wddm"):
+            snap = one_shot.sample()
+        self.assertEqual(len(snap.procs), 26)
+        self.assertEqual([call.args[0].pid for call in one_shot.inspector.scan.call_args_list],
+                         list(range(1, 27)))
+
+        tui = make_collector(0.15)
+        perf_times = iter([0, 0.01, 0.02, 0.03, 0.16])
+        with patch("gputaskman.collector.BACKEND", "wddm"), \
+                patch("gputaskman.collector.time.perf_counter", side_effect=lambda: next(perf_times, 0.16)):
+            tui.sample()
+        self.assertEqual([call.args[0].pid for call in tui.inspector.scan.call_args_list], [1, 2, 3])
+
     def test_missing_wsl_stack_is_unknown_with_reason_in_text_json_and_ui(self):
         c = Collector.__new__(Collector)
         c.adapter, c.adapters = None, []

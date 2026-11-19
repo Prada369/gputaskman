@@ -238,7 +238,7 @@ def _llm_wanted(row, shared_is_spill: bool) -> bool:
 
 
 class Collector:
-    DEEP_TOP_N = 25  # memory-map candidates: the top N VRAM users plus anything busy
+    DEEP_TOP_N = 25  # budgeted scans: the top N VRAM users plus anything busy
     _mac_driver = ""  # "macOS 26.3.1" on the metal backend, read once at startup
     SCAN_BUDGET = 0.15  # seconds of memory-map scanning per sample; leftovers wait for the next sample
     drm_card = None  # the selected GPU's AMD or Intel card, when it is one (drm.DrmCard)
@@ -301,7 +301,7 @@ class Collector:
                 self.counters.ascend = self.ascend
         self.inspector = ProcInspector()
         self.prober = ServerProber()
-        self.scan_budget = scan_budget  # None = scan every candidate now (one-shot output)
+        self.scan_budget = scan_budget  # None = scan every eligible local process now (one-shot output)
         self.gpu_index = gpu_index
         # WSL: Linux can't see WSL's own VRAM, but the Windows host can. Ask it when interop is enabled.
         self.host: HostStream | None = None
@@ -484,8 +484,11 @@ class Collector:
                 snap.counter_status, "Windows per-process counters exceed device capacity and may overlap; "
                                      "attributed total is unknown. Use the adapter reading as the device total.")))
         local_rows = [r for r in snap.procs if not r.host]
-        deep_pids = {r.pid for r in local_rows[: self.DEEP_TOP_N]} | {
-            r.pid for r in local_rows if r.gpu.gpu_pct >= 2}
+        if self.scan_budget is None:
+            deep_pids = {r.pid for r in local_rows}
+        else:
+            deep_pids = {r.pid for r in local_rows[: self.DEEP_TOP_N]} | {
+                r.pid for r in local_rows if r.gpu.gpu_pct >= 2}
         deadline = None if self.scan_budget is None else time.perf_counter() + self.scan_budget
         ollama_runners = []
         for row in local_rows:  # largest VRAM first, so the budget goes to what matters
