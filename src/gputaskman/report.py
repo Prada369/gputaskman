@@ -60,8 +60,9 @@ INFERRED_NOTE = ("* matched: the size is exact (Windows' counter for a WSL VM GP
                  "(or every one that fits gives the same size).")
 ORDER_NOTE = ("? order guess: the size is exact but several owners fit, so newer processes are paired with newer "
               "GPU contexts / PIDs and outside ones are assumed oldest. Cached foreign-size hints only rank extra "
-              "candidates; they never prove ownership. Becomes * with evidence, such as a process starting while "
-              "gputaskman runs.")
+              "candidates; they never prove ownership. WSL may promote to * when its context tracker uniquely "
+              "identifies an owner or every viable context gives the same bytes. Container process/NVML start "
+              "correlation only keeps a pair stable; it does not prove ownership.")
 
 
 DRM_NOTES = {

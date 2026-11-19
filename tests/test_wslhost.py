@@ -510,6 +510,8 @@ class HostRowTests(unittest.TestCase):
         self.assertEqual(row.gpu.inferred_by, "order")
         self.assertIn("3.00 GB?", to_text(snap))
         self.assertIn("order guess", to_text(snap))
+        self.assertIn("WSL may promote to * when its context tracker uniquely", to_text(snap))
+        self.assertIn("Container process/NVML start correlation only keeps a pair stable", to_text(snap))
 
     def test_split_reason_is_reported(self):
         snap = self.snap()  # SAMPLE has 2 vmwp contexts; add Linux rows until there are more holders

@@ -267,6 +267,11 @@ class ContainerTests(unittest.TestCase):
         per = self.sample(c, fake, holders={547}, cuda={547})
         self.assertEqual((per[547].dedicated, per[547].inferred_by), (3 * GiB, "order"))
         self.assertEqual(c.outside, {})
+        row = ProcRow(547, "python3", "AI", per[547], ProcDetail(547, "python3"))
+        snap = Snapshot(taken=1, adapter=None, adapters=[], nv=None, driver="", cuda="", vram_total=8 * GiB,
+                        vram_used=3 * GiB, shared_used=None, backend="nvml", procs=[row])
+        self.assertIn("Container process/NVML start correlation only keeps a pair stable",
+                      to_text(snap))
 
     def test_simultaneous_starts_keep_a_stable_pair_without_proving_ownership(self):
         matcher = linux.PidMatcher()
