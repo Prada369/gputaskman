@@ -195,8 +195,9 @@ laptop with an RTX 4050 Laptop GPU (driver 620.70.06) and an AMD Phoenix iGPU: e
 matched `nvidia-smi` (a llama-server with Qwen2.5-1.5B Q4_K_M at `-ngl 99 -c 4096` showed 1.19 GB
 against 1218 MiB, and `gputaskman diff` put the device change at +1.20 GB, against +1224 MiB from
 `nvidia-smi`). The model was identified with `api+mapped+cmdline` evidence, and with
-`-lv 4 --log-file` the exact CUDA0 buffer sizes (935 MB weights, 112 MB KV cache) matched the
-GGUF-based estimates. During generation the TUI showed the server at 96% GPU% against 95% from
+`-lv 4 --log-file` the runtime-reported CUDA0 load-time sizes (935 MB weights, 112 MB KV cache)
+matched the GGUF-based estimates; these log events are history, not current allocation measurements.
+During generation the TUI showed the server at 96% GPU% against 95% from
 `nvidia-smi pmon`.
 
 **AMD GPUs on native Linux** (the `amdgpu` driver) need no ROCm, AMD SMI, or extra package: the
@@ -541,7 +542,7 @@ for a privacy consent prompt.
   and load, never GPU memory (see [System RAM and CPU](#system-ram-and-cpu)).
 - **Model inspector:** which model each process holds (LLM, decision, embedding, speech, or diffusion), how
   it was identified, architecture, quantization, layer count, weights, estimated KV cost, and
-  buffer sizes from compatible load logs.
+  timestamped load-log history. Log sizes describe allocations at load time, not current residency.
 - **Live server hints:** context size, busy slots, throughput when available, and friendly Ollama
   or LM Studio model names.
 - **Scriptable output:** one-shot text and JSON, using the same collector as the TUI.
@@ -1200,11 +1201,15 @@ the worker's key is never sent there. A 401 is shown as **Parent-process API loc
 Probe caches separate own/parent origins, process creation times, runtime and credentials, so
 an authenticated own-port result cannot silently satisfy a parent request.
 
-Ollama's local `server.log` is considered when one Ollama runner is detected. Log formats,
-rotation, and stale load blocks can affect attribution, so compare the reported model and
-process when interpreting logs. Log sizes describe allocations at load time, not necessarily
-which pages remain resident now. An inferred remainder is runtime/unknown overhead, not an
-exact measurement of the CUDA context.
+Ollama's local `server.log` is considered when one Ollama runner is detected. The monitor reads at
+most 512 KiB from the tail and shows recent runtime-reported buffer records in a separate history
+section in text and the inspector. Each record uses only its own timestamp, if present. Records
+are not summed or assumed to describe the same load, and never enter the current allocation
+breakdown. In JSON, `llm.log_history` lists the device, buffer kind, bytes, timestamp, and
+`timestamp_issue` for each record, separately from current `segments`. Missing timestamps are
+`null`; timezone-free or unusable timestamps are not compared to process start.
+Any inferred remainder in the current breakdown is runtime/unknown overhead, not an exact
+measurement of the CUDA context.
 
 Without logs, estimates assume llama.cpp-style placement. Architecture, partial offload,
 KV quantization, sliding-window attention, and multiple models in one process can all change

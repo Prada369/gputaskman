@@ -1,7 +1,7 @@
 """What's inside an LLM process's VRAM: weights vs KV cache vs compute/runtime.
 
 Evidence, best first:
-  1. llama.cpp / Ollama load logs  -> exact per-device buffer sizes
+  1. llama.cpp / Ollama load logs  -> timestamped load-time buffer history
   2. Local server endpoints        -> llama-server /props,/v1/models,/slots,/metrics; Ollama /api/ps;
                                       LM Studio /api/v1/models (falls back to /api/v0/models);
                                       Foundry Local /models/loaded (loaded IDs only)
@@ -12,6 +12,7 @@ The process's real VRAM total always comes from Windows, so the remainder is nev
 from __future__ import annotations
 
 import dataclasses
+import datetime
 import hashlib
 import json
 import math
@@ -62,13 +63,48 @@ def parse_flags(cmd: list[str]) -> dict:
     return out
 
 
-# ---------------------------------------------------------------- logs (exact numbers)
+# ---------------------------------------------------------------- runtime log history
 
 _LLAMA_BUF = re.compile(r"(\S+)\s+(model|KV|compute|output|RS)\s+buffer size\s*=\s*([\d.]+)\s*MiB")
 _OLLAMA_BUF = re.compile(r'msg="(model weights|kv cache|compute graph)"\s+device=(\S+)\s+size="([\d.]+)\s*(GiB|MiB|KiB|B)"')
+_LOG_TIMESTAMP = re.compile(
+    r'^\s*(?:time="?|\[)?(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?'
+    r'(?:Z|[+-]\d{2}:?\d{2})?)(?=[\s"\]]|$)'
+)
 _UNIT = {"GiB": 1 << 30, "MiB": 1 << 20, "KiB": 1 << 10, "B": 1}
 _KIND = {"model": "weights", "model weights": "weights", "KV": "kv", "kv cache": "kv", "RS": "kv",
          "compute": "compute", "compute graph": "compute", "output": "compute"}
+
+
+@dataclass
+class LoggedBuffer:
+    device: str
+    kind: str
+    bytes: int
+    timestamp: str | None
+    timestamp_epoch: float | None
+    timestamp_issue: str | None
+
+
+def _log_timestamp(line: str) -> tuple[str | None, float | None, str | None]:
+    match = _LOG_TIMESTAMP.search(line)
+    if not match:
+        return None, None, "missing"
+    value = match[1]
+    try:
+        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value, None, "unparseable"
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return value, None, "timezone-unknown"
+    try:
+        return value, _datetime_epoch(parsed), None
+    except (OSError, OverflowError, ValueError):
+        return value, None, "unrepresentable"
+
+
+def _datetime_epoch(value: datetime.datetime) -> float:
+    return value.timestamp()
 
 
 def is_gpu_device(dev: str) -> bool:
@@ -76,27 +112,30 @@ def is_gpu_device(dev: str) -> bool:
     return not (d.startswith("CPU") or "HOST" in d or d.startswith("MMAP"))
 
 
-def parse_load_log(path: str, not_before: float = 0.0) -> dict[str, dict[str, int]] | None:
-    """Most recent model-load block in a llama.cpp/Ollama log -> {device: {kind: bytes}}."""
+def parse_load_log(path: str) -> list[LoggedBuffer]:
+    """Read recent buffer records, not a proven load block or a set of simultaneous allocations."""
+    limit = 512 << 10
     try:
-        if os.path.getmtime(path) < not_before:
-            return None
         with open(path, "rb") as f:
-            f.seek(0, 2)
-            f.seek(max(f.tell() - (512 << 10), 0))
-            lines = f.read().decode("utf-8", "replace").splitlines()
+            offset = max(f.seek(0, 2) - limit, 0)
+            f.seek(offset)
+            tail = f.read(limit)
     except OSError:
-        return None
+        return []
+    if offset:
+        # A clipped line could lose its timestamp or contain only part of a buffer record.
+        tail = tail.partition(b"\n")[2]
+    lines = tail.decode("utf-8", "replace").splitlines()
     start = None
-    for i in range(len(lines) - 1, -1, -1):  # last load starts at its first weights line
+    for i in range(len(lines) - 1, -1, -1):  # Bound displayed history to the most recent weights run onward.
         if "model buffer size" in lines[i] or 'msg="model weights"' in lines[i]:
             start = i
             while start > 0 and ("model buffer size" in lines[start - 1] or 'msg="model weights"' in lines[start - 1]):
                 start -= 1
             break
     if start is None:
-        return None
-    out: dict[str, dict[str, int]] = {}
+        return []
+    out = []
     for line in lines[start:]:
         m = _LLAMA_BUF.search(line)
         if m:
@@ -106,9 +145,8 @@ def parse_load_log(path: str, not_before: float = 0.0) -> dict[str, dict[str, in
             if not m:
                 continue
             dev, kind, n = m[2], _KIND[m[1]], int(float(m[3]) * _UNIT[m[4]])
-        out.setdefault(dev, {}).setdefault(kind, 0)
-        out[dev][kind] += n
-    return out or None
+        out.append(LoggedBuffer(dev, kind, n, *_log_timestamp(line[:m.start()])))
+    return out
 
 
 def ollama_log_path() -> str:
@@ -555,7 +593,7 @@ class LlmView:
     host: ServerInfo | None = None  # managing front-end (Ollama / LM Studio) when the runner has its own server
     server_source: str | None = None  # process | parent; an API report, not proof of worker residency
     log_source: str | None = None
-    log: dict | None = None
+    log: list[LoggedBuffer] = field(default_factory=list)
     segments: list[Segment] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     kv_per_token: int | None = None
@@ -582,6 +620,26 @@ def gb(n: float) -> str:
     if abs(n) >= 1 << 30:
         return f"{n / (1 << 30):.2f} GB"
     return f"{n / MiB:.0f} MB"
+
+
+LOG_HISTORY_LABEL = "Load-log history (runtime-reported; not current residency or allocation)"
+
+
+def log_buffer_text(record: LoggedBuffer, process_start: float) -> str:
+    when = record.timestamp or "timestamp unavailable"
+    if record.timestamp_issue == "timezone-unknown":
+        when += " (has no timezone)"
+    elif record.timestamp_issue == "unrepresentable":
+        when += " (cannot be converted on this platform)"
+    elif record.timestamp_issue == "unparseable":
+        when += " (unparseable timestamp)"
+    elif record.timestamp_epoch is not None:
+        if process_start <= 0:
+            when += " (process start time unknown)"
+        elif record.timestamp_epoch < process_start - 5:
+            when += " (predates this process)"
+    size = f"{record.bytes / MiB:.2f}".rstrip("0").rstrip(".") + " MiB" if record.bytes >= MiB else f"{record.bytes} B"
+    return f"{record.device} {record.kind}: {size} at {when}"
 
 
 _SIDE_KINDS = ("vision projector", "LoRA adapter")
@@ -656,7 +714,7 @@ def build_view(d: ProcDetail, vram: float, shared: float, server: ServerInfo | N
 
     log_path = log_path or v.flags.get("log_file")
     if log_path:
-        v.log = parse_load_log(log_path, not_before=d.create_time - 5)
+        v.log = parse_load_log(log_path)
         v.log_source = log_path if v.log else None
 
     main = next((g for g in v.models if g.kind == "LLM" and g.n_layers), None)  # only causal LLMs grow a KV cache
@@ -676,53 +734,38 @@ def build_view(d: ProcDetail, vram: float, shared: float, server: ServerInfo | N
     no_kv = bool(primaries) and all(not g.causal for g in primaries)
 
     total = int(vram) if attributed else None  # None: the OS can't say how much VRAM this process holds
-    if v.log:
-        gpu = {dev: kinds for dev, kinds in v.log.items() if is_gpu_device(dev)}
-        acc = 0
-        for kind, label in (("weights", "weights"), ("kv", "KV cache"), ("compute", "compute buffers")):
-            n = sum(k.get(kind, 0) for k in gpu.values())
-            if n:
-                devs = ",".join(sorted(dev for dev, k in gpu.items() if k.get(kind)))
-                v.segments.append(Segment(f"{label} ({devs})", n, kind, exact=True))
-                acc += n
-        cpu_w = sum(k.get("weights", 0) for dev, k in v.log.items() if not is_gpu_device(dev))
-        if cpu_w and main and cpu_w > main.token_embd_bytes * 1.5:
-            v.notes.append(f"{gb(cpu_w)} of weights are on the CPU side (partial offload or CPU-mapped).")
-        if total is not None and total > acc:
-            v.segments.append(Segment("runtime and other overhead", total - acc, "runtime"))
-    else:
-        ngl = v.flags.get("ngl") if len(v.models) == 1 else None
-        weights = sum(g.gpu_weight_bytes(ngl) for g in v.models if g.kind != "LoRA adapter")
-        weights += sum(g.tensor_bytes for g in v.models if g.kind == "LoRA adapter")
-        if total is not None and weights > total * 1.03 and total > 0:
-            v.notes.append(f"Weights need ~{gb(weights)} but the process holds {gb(total)} of VRAM: "
-                           "partial offload, paging, or placement on another GPU may explain the gap.")
-            weights = total
-        if weights:
-            label = "weights" if len(v.models) == 1 else f"weights ({len(v.models)} files)"
-            v.segments.append(Segment(label, weights, "weights"))
-        kv = v.kv_per_token * v.n_ctx if (v.kv_per_token and v.n_ctx) else 0
-        rest = total - weights if total is not None else None
-        if rest is None:
-            if kv:
-                v.segments.append(Segment(f"KV cache ({v.n_ctx:,} ctx, {v.kv_type}) est.", kv, "kv"))
-            v.notes.append("This process's VRAM total is unknown (WSL charges it to the VM on the Windows host, "
-                           "or the driver hides per-process memory); segments are estimates from the model file and launch flags.")
-        elif kv and kv <= rest:
-            swa = main.sliding_window if main else None
-            v.segments.append(Segment(f"KV cache ({v.n_ctx:,} ctx, {v.kv_type}) est.{' max' if swa else ''}", kv, "kv"))
-            if swa:
-                v.notes.append(f"Sliding-window attention ({swa} tokens): most layers keep a short KV window, "
-                               "so the real KV cache is smaller than this estimate.")
-            rest -= kv
-            if rest > 0:
-                v.segments.append(Segment("compute buffers + runtime", rest, "runtime"))
-        elif rest > 0 and no_kv:
+    ngl = v.flags.get("ngl") if len(v.models) == 1 else None
+    weights = sum(g.gpu_weight_bytes(ngl) for g in v.models if g.kind != "LoRA adapter")
+    weights += sum(g.tensor_bytes for g in v.models if g.kind == "LoRA adapter")
+    if total is not None and weights > total * 1.03 and total > 0:
+        v.notes.append(f"Weights need ~{gb(weights)} but the process holds {gb(total)} of VRAM: "
+                       "partial offload, paging, or placement on another GPU may explain the gap.")
+        weights = total
+    if weights:
+        label = "weights" if len(v.models) == 1 else f"weights ({len(v.models)} files)"
+        v.segments.append(Segment(label, weights, "weights"))
+    kv = v.kv_per_token * v.n_ctx if (v.kv_per_token and v.n_ctx) else 0
+    rest = total - weights if total is not None else None
+    if rest is None:
+        if kv:
+            v.segments.append(Segment(f"KV cache ({v.n_ctx:,} ctx, {v.kv_type}) est.", kv, "kv"))
+        v.notes.append("This process's VRAM total is unknown (WSL charges it to the VM on the Windows host, "
+                       "or the driver hides per-process memory); segments are estimates from the model file and launch flags.")
+    elif kv and kv <= rest:
+        swa = main.sliding_window if main else None
+        v.segments.append(Segment(f"KV cache ({v.n_ctx:,} ctx, {v.kv_type}) est.{' max' if swa else ''}", kv, "kv"))
+        if swa:
+            v.notes.append(f"Sliding-window attention ({swa} tokens): most layers keep a short KV window, "
+                           "so the real KV cache is smaller than this estimate.")
+        rest -= kv
+        if rest > 0:
             v.segments.append(Segment("compute buffers + runtime", rest, "runtime"))
-        elif rest > 0:
-            v.segments.append(Segment("KV cache + compute + runtime", rest, "unknown"))
+    elif rest > 0 and no_kv:
+        v.segments.append(Segment("compute buffers + runtime", rest, "runtime"))
+    elif rest > 0:
+        v.segments.append(Segment("KV cache + compute + runtime", rest, "unknown"))
 
-    if not v.models and not v.log and total:
+    if not v.models and total:
         v.notes.append("No GGUF mapped. Model may be loaded with --no-mmap or via another format.")
     if no_kv:
         kinds = ", ".join(sorted({f"{g.decision_type} {g.kind}" if g.decision_type else g.kind for g in primaries}))

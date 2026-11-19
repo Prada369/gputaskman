@@ -19,7 +19,7 @@ from textual.worker import get_current_worker
 
 from .collector import BACKEND, Collector, ProcRow, Snapshot, enumerate_adapters, ordered_adapters
 from .host import HostSample, HostSampler
-from .llm import gb, redact_cmdline, server_gauge_text
+from .llm import LOG_HISTORY_LABEL, gb, log_buffer_text, redact_cmdline, server_gauge_text
 from .nvml import NvDevice, format_metric
 from .recovery import LiveCollectors
 from .report import (DRM_RESIDENT_NOTE, METAL_NOTE, WDDM_DEVICE_NOTE, WSL_EMPTY, drm_note, has_engine_counters, has_shared_counters, has_wddm_counters,
@@ -874,9 +874,10 @@ class GpuTaskManager(App):
                 legend.append("■ ", style=SEG_STYLE[x.kind])
                 legend.append(f"{x.label} {gb(x.bytes)}", style="bold" if x.exact else "")
                 legend.append("  ")
-            if v.log_source:
-                legend.append(f"(allocated sizes from {os.path.basename(v.log_source)})", style="green")
             out.append(legend)
+            if v.log:
+                out.append(Text(LOG_HISTORY_LABEL, style="green"))
+                out.append(Text("\n".join(log_buffer_text(record, r.detail.create_time) for record in v.log)))
             if v.models:
                 mt = Table(box=None, padding=(0, 1), show_edge=False, header_style="bold grey70")
                 for col in ("", "model", "arch", "params", "quant", "layers", "train ctx", "on GPU (est)", "evidence", "file"):
