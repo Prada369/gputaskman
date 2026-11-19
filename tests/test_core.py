@@ -1377,6 +1377,7 @@ class ModelTests(unittest.TestCase):
                 "CUDA0": {"weights": 100 * MiB, "kv": 30 * MiB, "compute": 5 * MiB},
             })
             self.assertIsNone(parsed.timestamp)
+            self.assertEqual(parsed.timestamp_issue, "missing")
 
 
 def gguf(arch: str, **meta) -> GgufInfo:
@@ -1915,6 +1916,7 @@ class IdentityTests(unittest.TestCase):
         s.procs[0] = ProcRow(detail.pid, detail.name, classify(detail, {}), ProcGpu(dedicated=20 * MiB), detail, view)
         event = to_dict(s)["processes"][0]["llm"]["log_event"]
         self.assertEqual(event["timestamp"], "2026-01-02T10:00:00Z")
+        self.assertIsNone(event["timestamp_issue"])
         self.assertEqual(event["buffers"]["Vulkan0"]["weights"], 10 * MiB)
         self.assertIn("load-log history", to_text(s))
         self.assertIn("2026-01-02T10:00:00Z", to_text(s))
@@ -1929,6 +1931,36 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(view.log.buffers["CUDA0"]["weights"], 10 * MiB)
         self.assertFalse(any(s.exact or "CUDA0" in s.label for s in view.segments))
         self.assertTrue(any("no usable timestamp" in note for note in view.notes))
+
+    def test_timezone_free_load_log_timestamp_is_not_compared_to_process_start(self):
+        detail = ProcDetail(5, "llama-server.exe",
+                            create_time=datetime(2026, 1, 3, 9, tzinfo=timezone.utc).timestamp())
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "server.log"
+            path.write_text("2026-01-02T10:00:00 load_tensors: CUDA0 model buffer size = 10 MiB\n",
+                            encoding="utf-8")
+            view = build_view(detail, 20 * MiB, 0, None, str(path))
+        self.assertEqual(view.log.timestamp, "2026-01-02T10:00:00")
+        self.assertIsNone(view.log.timestamp_epoch)
+        self.assertEqual(view.log.timestamp_issue, "timezone-unknown")
+        self.assertFalse(any("predates this process" in note for note in view.notes))
+        self.assertTrue(any("has no timezone" in note for note in view.notes))
+
+    def test_unrepresentable_log_timestamps_remain_history(self):
+        detail = ProcDetail(5, "llama-server.exe",
+                            create_time=datetime(2026, 1, 2, 9, tzinfo=timezone.utc).timestamp())
+        for timestamp in ("0001-01-01T00:00:00", "9999-12-31T23:59:59"):
+            with self.subTest(timestamp=timestamp), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "server.log"
+                path.write_text(f"{timestamp}Z load_tensors: CUDA0 model buffer size = 10 MiB\n",
+                                encoding="utf-8")
+                with patch("gputaskman.llm._datetime_epoch", side_effect=OSError("unsupported timestamp")):
+                    view = build_view(detail, 20 * MiB, 0, None, str(path))
+            self.assertEqual(view.log.timestamp, f"{timestamp}Z")
+            self.assertIsNone(view.log.timestamp_epoch)
+            self.assertEqual(view.log.timestamp_issue, "unrepresentable")
+            self.assertFalse(any("predates this process" in note for note in view.notes))
+            self.assertTrue(any("cannot be converted on this platform" in note for note in view.notes))
 
     def test_installed_models_are_candidates_only(self):
         with tempfile.TemporaryDirectory() as root:

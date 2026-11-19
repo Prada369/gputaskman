@@ -1187,8 +1187,10 @@ older block current. Untimestamped blocks and blocks predating the process remai
 log history but are not used in the current allocation breakdown. Timestamped buffer sizes are
 runtime-reported at load time, not evidence of process identity, current residency, or exact
 current allocation. The JSON `llm.log_event` field retains the parsed timestamp and reported
-buffers separately from the current `segments`. Any inferred remainder in the current breakdown
-is runtime/unknown overhead, not an exact measurement of the CUDA context.
+buffers separately from the current `segments`, with `timestamp_issue` explaining why a time cannot
+be compared when it is missing, timezone-free, unparseable, or outside the platform's epoch range.
+Any inferred remainder in the current breakdown is runtime/unknown overhead, not an exact
+measurement of the CUDA context.
 
 Without logs, estimates assume llama.cpp-style placement. Architecture, partial offload,
 KV quantization, sliding-window attention, and multiple models in one process can all change

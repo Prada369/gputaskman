@@ -80,18 +80,28 @@ class LoadLog:
     buffers: dict[str, dict[str, int]]
     timestamp: str | None
     timestamp_epoch: float | None
+    timestamp_issue: str | None
 
 
-def _log_timestamp(line: str) -> tuple[str | None, float | None]:
+def _log_timestamp(line: str) -> tuple[str | None, float | None, str | None]:
     match = _LOG_TIMESTAMP.search(line)
     if not match:
-        return None, None
+        return None, None, "missing"
     value = match[1]
     try:
         parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
-        return value, parsed.timestamp()
     except ValueError:
-        return None, None
+        return value, None, "unparseable"
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return value, None, "timezone-unknown"
+    try:
+        return value, _datetime_epoch(parsed), None
+    except (OSError, OverflowError, ValueError):
+        return value, None, "unrepresentable"
+
+
+def _datetime_epoch(value: datetime.datetime) -> float:
+    return value.timestamp()
 
 
 def is_gpu_device(dev: str) -> bool:
@@ -117,7 +127,7 @@ def parse_load_log(path: str) -> LoadLog | None:
             break
     if start is None:
         return None
-    timestamp, timestamp_epoch = _log_timestamp(lines[start])
+    timestamp, timestamp_epoch, timestamp_issue = _log_timestamp(lines[start])
     out: dict[str, dict[str, int]] = {}
     for line in lines[start:]:
         m = _LLAMA_BUF.search(line)
@@ -130,7 +140,7 @@ def parse_load_log(path: str) -> LoadLog | None:
             dev, kind, n = m[2], _KIND[m[1]], int(float(m[3]) * _UNIT[m[4]])
         out.setdefault(dev, {}).setdefault(kind, 0)
         out[dev][kind] += n
-    return LoadLog(out, timestamp, timestamp_epoch) if out else None
+    return LoadLog(out, timestamp, timestamp_epoch, timestamp_issue) if out else None
 
 
 def ollama_log_path() -> str:
@@ -614,8 +624,15 @@ def build_view(d: ProcDetail, vram: float, shared: float, server: ServerInfo | N
         v.log_source = log_path if v.log else None
         if v.log:
             if v.log.timestamp_epoch is None:
-                v.notes.append("Latest runtime buffer log has no usable timestamp; retained as history, not attributed "
-                               "to this process or its current allocation.")
+                if v.log.timestamp_issue == "timezone-unknown":
+                    v.notes.append(f"Runtime buffer log timestamp {v.log.timestamp} has no timezone; retained as "
+                                   "history and not compared with process start.")
+                elif v.log.timestamp_issue == "unrepresentable":
+                    v.notes.append(f"Runtime buffer log timestamp {v.log.timestamp} cannot be converted on this "
+                                   "platform; retained as history and not compared with process start.")
+                else:
+                    v.notes.append("Latest runtime buffer log has no usable timestamp; retained as history, not "
+                                   "attributed to this process or its current allocation.")
             elif d.create_time <= 0:
                 v.notes.append(f"Runtime buffer log reports load-time sizes at {v.log.timestamp}; process start time "
                                "is unknown, and the event does not prove process identity or current residency.")

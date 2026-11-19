@@ -162,7 +162,9 @@ def to_dict(s: Snapshot) -> dict:
                 "server": dataclasses.asdict(p.llm.server) if p.llm.server else None,
                 "server_source": p.llm.server_source,
                 "log_source": p.llm.log_source,
-                "log_event": ({"timestamp": p.llm.log.timestamp, "buffers": p.llm.log.buffers}
+                "log_event": ({"timestamp": p.llm.log.timestamp,
+                               "timestamp_issue": p.llm.log.timestamp_issue,
+                               "buffers": p.llm.log.buffers}
                               if p.llm.log else None),
                 "notes": p.llm.notes,
             }
