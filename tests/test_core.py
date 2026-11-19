@@ -33,8 +33,8 @@ from gputaskman.gguf import GgufInfo, read_gguf
 from gputaskman.handy import HandyEvidence, inspect_handy, _log_cache, _settings_cache
 from gputaskman.host import HostSample
 from gputaskman.llm import (LlmView, ServerInfo, ServerProber, _get, api_key, build_view, is_gpu_device,
-                            llama_server_models, lmstudio_models, parse_flags, parse_load_log, probe_server,
-                            redact_cmdline)
+                            llama_server_models, lmstudio_models, ollama_models, parse_flags, parse_load_log,
+                            probe_server, redact_cmdline)
 from gputaskman.nvml import NvDevice, Nvml
 from gputaskman.pdh import AdapterGpu, GpuCounters, ProcGpu
 from gputaskman.procinfo import (AI_KINDS, AMBIGUOUS_EXTS, MODEL_EXTS, PATH_ARG_CANDIDATES, PATH_ARG_TOKENS,
@@ -1561,15 +1561,83 @@ class IdentityTests(unittest.TestCase):
              "size_bytes": 449, "loaded_instances": [{"id": "laya", "config": {"context_length": 8192}}]},
             {"type": "llm", "key": "idle", "loaded_instances": []},
         ]}
-        self.assertEqual(lmstudio_models(v1, None), [{"name": "laya", "type": "decision (laya)", "quant": "Q8_0",
-                                                      "ctx": 8192, "size": 449, "size_vram": None, "path": None}])
+        models, complete = lmstudio_models(v1, None)
+        self.assertEqual(models, [{"name": "laya", "type": "decision (laya)", "quant": "Q8_0",
+                                   "ctx": 8192, "size": 449, "size_vram": None, "path": None}])
+        self.assertTrue(complete)
         v0 = {"data": [{"id": "a", "type": "llm", "state": "loaded", "quantization": "Q4_K_M", "loaded_context_length": 4096},
                        {"id": "b", "state": "not-loaded"}]}
-        self.assertEqual([(m["name"], m["ctx"]) for m in lmstudio_models(None, v0)], [("a", 4096)])
+        models, complete = lmstudio_models(None, v0)
+        self.assertEqual([(m["name"], m["ctx"]) for m in models], [("a", 4096)])
+        self.assertTrue(complete)
         self.assertIsNone(lmstudio_models(None, None))
         llama = {"data": [{"id": r"C:\m\Laya-Q8_0.gguf", "architecture": {"output_modalities": ["decisions"]},
                            "meta": {"ftype": "Q8_0", "n_ctx": 8192, "size": 447}}]}
         self.assertEqual(llama_server_models(llama, r"C:\m\Laya-Q8_0.gguf")[0]["type"], "decision")
+
+    def test_runtime_api_parsers_skip_malformed_entries_and_nested_values(self):
+        llama = {"data": [None, "bad", {"id": "good", "architecture": None,
+                                         "meta": {"n_ctx": [], "size": {}}}]}
+        llama_models = llama_server_models(llama, None)
+        self.assertEqual([m["name"] for m in llama_models], ["good"])
+        self.assertEqual((llama_models[0]["ctx"], llama_models[0]["size"]), (None, None))
+
+        ollama = {"models": [None, 7, {"name": "good", "details": [], "size": 0, "size_vram": 0},
+                             {"name": "bad", "size": [], "size_vram": {}}]}
+        self.assertEqual(ollama_models(ollama), [
+            {"name": "good", "type": "llm", "quant": None, "ctx": None, "size": 0, "size_vram": 0, "path": None},
+            {"name": "bad", "type": "llm", "quant": None, "ctx": None, "size": None, "size_vram": None, "path": None},
+        ])
+
+        lmstudio = {"models": [
+            None,
+            {"key": "good", "quantization": [], "loaded_instances": [None, {"id": "good", "config": None}]},
+            {"key": "idle", "loaded_instances": None},
+        ]}
+        models, complete = lmstudio_models(lmstudio, None)
+        self.assertFalse(complete)
+        self.assertEqual(models, [
+            {"name": "good", "type": None, "quant": None, "ctx": None, "size": None, "size_vram": None, "path": None}
+        ])
+        models, complete = lmstudio_models(None, {"data": [None, {"state": "loaded", "id": "good"}]})
+        self.assertFalse(complete)
+        self.assertEqual(models, [
+            {"name": "good", "type": None, "quant": None, "ctx": None, "size": None, "size_vram": None, "path": None}
+        ])
+
+    def test_malformed_llama_server_response_does_not_stop_probe(self):
+        with patch("gputaskman.llm._get", side_effect=[
+                {"model_path": [], "default_generation_settings": None, "n_ctx": [], "total_slots": {}},
+                {"data": []},
+                [{"is_processing": True}, None, 7, {"is_processing": False}],
+                None,
+        ]):
+            server = probe_server(8080)
+        self.assertEqual(server.kind, "llama-server")
+        self.assertIsNone(server.n_ctx)
+        self.assertEqual(server.models, [])
+        self.assertEqual((server.slots_total, server.slots_busy, server.requests_running), (None, None, None))
+
+    def test_llama_server_slots_require_complete_boolean_statuses(self):
+        props = {"model_path": None, "total_slots": 8}
+        cases = (
+            ("null entry", [None], (8, None, None)),
+            ("mixed entries", [{"is_processing": True}, None], (8, None, None)),
+            ("missing status", [{}], (8, None, None)),
+            ("invalid status", [{"is_processing": "false"}], (8, None, None)),
+            ("empty list", [], (0, 0, 0)),
+        )
+        for label, slots, expected in cases:
+            with self.subTest(label=label), patch("gputaskman.llm._get",
+                    side_effect=[props, {"data": []}, slots, None]):
+                server = probe_server(8080)
+            self.assertEqual((server.slots_total, server.slots_busy, server.requests_running), expected)
+
+        metrics = "llamacpp:requests_processing 3\nllamacpp:requests_deferred 2"
+        with patch("gputaskman.llm._get", side_effect=[props, {"data": []}, [None], metrics]):
+            server = probe_server(8080)
+        self.assertEqual((server.slots_total, server.slots_busy, server.requests_running, server.requests_waiting),
+                         (8, None, 3, 2))
 
     def test_api_key_from_launch_arguments(self):
         self.assertEqual(api_key(["llama-server", "--api-key", "abc"]), "abc")
@@ -1941,6 +2009,66 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(view.files[0].sources, ["cmdline", "api"])
         self.assertEqual(model.sources, ["cmdline"])
 
+    def test_lmstudio_instance_without_an_identifier_does_not_correlate_a_model(self):
+        models, complete = lmstudio_models({"models": [
+            {"key": [], "loaded_instances": [{"id": []}]},
+        ]}, None)
+        self.assertFalse(complete)
+        self.assertEqual(models, [])
+        models, complete = lmstudio_models(None, {"data": [{"state": "loaded"}]})
+        self.assertFalse(complete)
+        self.assertEqual(models, [])
+        model = MappedModel("m.gguf", 1000, 0, True, ["mapped"], kind="LLM")
+        detail = ProcDetail(6, "llama-server.exe", models=[model])
+        host = ServerInfo("lmstudio", "http://127.0.0.1:1", models=models)
+        with patch("gputaskman.llm.read_gguf", return_value=gguf("qwen3", block_count=1)):
+            view = build_view(detail, GiB, 0, None, host=host)
+        self.assertEqual(view.files[0].sources, ["mapped"])
+
+    def test_lmstudio_incomplete_loaded_list_cannot_correlate_as_singleton(self):
+        response = {"models": [
+            {"key": "qwen3", "type": "llm", "loaded_instances": [{"id": "qwen3"}]},
+            {"key": "other", "type": "llm", "loaded_instances": [None]},
+        ]}
+        with patch("gputaskman.llm._get", side_effect=[None, None, response]):
+            server = probe_server(8080)
+        self.assertEqual([model["name"] for model in server.models], ["qwen3"])
+        self.assertFalse(server.models_complete)
+
+        model = MappedModel("m.gguf", 1000, 0, True, ["mapped"], kind="LLM")
+        detail = ProcDetail(6, "llama-server.exe", models=[model])
+        with patch("gputaskman.llm.read_gguf", return_value=gguf("qwen3", block_count=1)):
+            view = build_view(detail, GiB, 0, server)
+        self.assertEqual(view.files[0].sources, ["mapped"])
+        snap = snapshot()
+        snap.procs[0].llm = view
+        server_json = to_dict(snap)["processes"][0]["llm"]["server"]
+        self.assertNotIn("models_complete", server_json)
+        self.assertIn("slots=n/a/n/a", to_text(snap))
+
+    def test_lmstudio_complete_singleton_can_correlate_one_mapped_model(self):
+        response = {"models": [
+            {"key": "qwen3", "type": "llm", "loaded_instances": [{"id": "qwen3"}]},
+        ]}
+        with patch("gputaskman.llm._get", side_effect=[None, None, response]):
+            server = probe_server(8080)
+        self.assertTrue(server.models_complete)
+        model = MappedModel("m.gguf", 1000, 0, True, ["mapped"], kind="LLM")
+        detail = ProcDetail(6, "llama-server.exe", models=[model])
+        with patch("gputaskman.llm.read_gguf", return_value=gguf("qwen3", block_count=1)):
+            view = build_view(detail, GiB, 0, server)
+        self.assertEqual(view.files[0].sources, ["mapped", "api"])
+
+    def test_ollama_unknown_vram_usage_is_not_rendered_as_zero(self):
+        for size_vram, expected in ((None, "n/a"), ([], "n/a"), (0, "0%"), (GiB, "100%")):
+            with self.subTest(size_vram=size_vram):
+                models = ollama_models({"models": [{"name": "qwen3:14b", "size": GiB,
+                                                    "size_vram": size_vram}]})
+                host = ServerInfo("ollama", "http://127.0.0.1:1", models=models)
+                view = build_view(ProcDetail(6, "ollama.exe"), GiB, 0, None, host=host)
+                note = next(n for n in view.notes if n.startswith("Ollama"))
+                self.assertIn(f"{expected} on GPU", note)
+
 
 class ChartTests(unittest.TestCase):
     def test_spark_distinguishes_zero_from_missing_and_clamps_values(self):
@@ -2028,6 +2156,21 @@ class UiTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("llama-server (runtime-reported): requests running 0, waiting 0, "
                               "KV-cache pool 0.0%", text)
                 self.assertIn("not of GPU memory", text)
+
+    async def test_inspector_labels_unknown_busy_slots_when_total_is_known(self):
+        snap = snapshot()
+        row = snap.procs[0]
+        server = ServerInfo("llama-server", "http://127.0.0.1:8080", slots_total=4)
+        row.llm = build_view(row.detail, row.gpu.dedicated, row.gpu.shared, server)
+        with patch.object(GpuTaskManager, "poll"):
+            app = GpuTaskManager()
+            app.selected_key = "10"
+            async with app.run_test(size=(180, 50)) as pilot:
+                app.apply(snap)
+                await pilot.pause()
+                text = "\n".join(getattr(line, "plain", "") for line in
+                                 app.query_one("#inspector", Static).content.renderables)
+                self.assertIn("slots busy n/a/4", text)
 
     async def test_monitoring_toggle_hides_diagnostics_without_changing_live_state(self):
         s = snapshot()

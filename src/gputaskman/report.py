@@ -147,6 +147,9 @@ def to_dict(s: Snapshot) -> dict:
         if p.handy:
             item["handy"] = dataclasses.asdict(p.handy)
         if p.llm:
+            server = dataclasses.asdict(p.llm.server) if p.llm.server else None
+            if server:
+                server.pop("models_complete")
             item["llm"] = {
                 "models": [{"path": g.path, "name": g.name, "label": p.llm.label(i), "arch": g.arch, "kind": g.kind,
                             "kind_label": p.llm.kind_label(i),
@@ -159,7 +162,7 @@ def to_dict(s: Snapshot) -> dict:
                            for i, g in enumerate(p.llm.models)],
                 "segments": [dataclasses.asdict(x) for x in p.llm.segments],
                 "kv_bytes_per_token": p.llm.kv_per_token, "n_ctx": p.llm.n_ctx, "flags": p.llm.flags,
-                "server": dataclasses.asdict(p.llm.server) if p.llm.server else None,
+                "server": server,
                 "server_source": p.llm.server_source,
                 "log_source": p.llm.log_source, "notes": p.llm.notes,
             }
@@ -288,7 +291,9 @@ def to_text(s: Snapshot, limit: int = 30) -> str:
             out.append(f"   {gb(seg.bytes):>9}  {seg.label}{'' if seg.exact else ''}")
         if p.llm.server:
             sv = p.llm.server
-            out.append(f"   server: {sv.kind} {sv.url} ctx={sv.n_ctx} slots={sv.slots_busy}/{sv.slots_total}"
+            busy = "n/a" if sv.slots_busy is None else str(sv.slots_busy)
+            total_slots = "n/a" if sv.slots_total is None else str(sv.slots_total)
+            out.append(f"   server: {sv.kind} {sv.url} ctx={sv.n_ctx} slots={busy}/{total_slots}"
                        + (f" gen={sv.gen_tok_s:.1f} tok/s" if sv.gen_tok_s is not None else ""))
             if p.llm.server_source == "parent":
                 out.append("   server source: parent process (API report, not worker residency)")
