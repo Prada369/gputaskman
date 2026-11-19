@@ -596,7 +596,7 @@ def _merge_api(files: list[MappedModel], server: ServerInfo | None, host: Server
         if hit:
             hit.add_source("api")
         elif os.path.isfile(server.model_path):  # loaded without mmap or via the router: API-only evidence
-            files.insert(0, make_model(server.model_path, os.path.getsize(server.model_path), 0,
+            files.insert(0, make_model(server.model_path, os.path.getsize(server.model_path), None,
                                        is_gguf(server.model_path), "api"))
     for front in (s for s in (server, host) if s and s.kind == "ollama"):
         for f in files:
