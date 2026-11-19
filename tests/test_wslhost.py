@@ -548,7 +548,7 @@ class HostRowTests(unittest.TestCase):
                     + [["dedicated usage", LUID, total]], {"24820": "vmwp"})
         c = self.collector(FakeStream(parse_line(busy, now=time.time())))
         c.adapter = Adapter(RTX, "NVIDIA", 0x10DE, 24 * GiB, 0, False)
-        c.adapters, c.gpu_index, c.scan_budget = [c.adapter], 0, None
+        c.adapters, c.gpu_index, c.scan_budget = [c.adapter], 0, Collector.SCAN_BUDGET
         c.host_status = ""
         c.nvml = Mock(ok=False, driver="", cuda_version="")
         c.counters = Mock(outside={})
@@ -569,7 +569,8 @@ class HostRowTests(unittest.TestCase):
         c.prober = Mock()
         c.prober.get.return_value = None
         with patch.object(collector_mod, "BACKEND", "wsl"), \
-                patch.object(collector_mod, "build_view", return_value=LlmView()) as view:
+                patch.object(collector_mod, "build_view", return_value=LlmView()) as view, \
+                patch.object(collector_mod.time, "perf_counter", return_value=0.0):
             snap = c.sample()
             self.assertEqual(c.inspector.scan.call_count, Collector.DEEP_TOP_N)
             self.assertEqual(c.inspector.scan.call_args_list[0].args, (details[big_pid], 8 * GiB))
