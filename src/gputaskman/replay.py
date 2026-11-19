@@ -909,6 +909,14 @@ def _pct(value) -> str:
 
 def _note(proc: dict) -> str:
     parts = []
+    fallback = []
+    for key, label in (("wddm_dedicated_usage_bytes", "Dedicated Usage"),
+                       ("wddm_shared_usage_bytes", "Shared Usage")):
+        value = _number(proc.get(key))
+        if value is not None:
+            fallback.append(f"{label} {gb(value)}")
+    if fallback:
+        parts.append("Windows fallback " + ", ".join(fallback) + " (may overlap; not attributed)")
     if _shown_vram(proc) is not None and (proc.get("vram_attributed") is False
                                           or vram_mark(proc.get("vram_inferred_by"))):
         parts.append("inferred")
