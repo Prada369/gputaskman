@@ -140,6 +140,26 @@ class LinuxCountersTests(unittest.TestCase):
         with patch.object(linux, "N", fake), patch.object(linux, "is_wsl", return_value=wsl):
             return linux.LinuxCounters()
 
+    def collect(self, fake):
+        collector = Collector.__new__(Collector)
+        collector.adapter = Adapter(KEY, "NVIDIA GeForce RTX 3090 Ti", 0x10DE, 24 * GiB, 0, False)
+        collector.adapters = [collector.adapter]
+        collector.gpu_index, collector.scan_budget, collector.host, collector.host_status = 0, None, None, ""
+        collector.counters = self.counters(fake, wsl=False)
+        collector.nvml = Mock(ok=True, driver="", cuda_version="")
+        collector.nvml.sample.return_value = [
+            NvDevice(index=0, pci_bus="00000000:01:00.0", mem_total=24 * GiB, mem_used=fake.used)
+        ]
+        collector.drm_card = collector.ascend_chip = collector.ascend = None
+        collector.inspector = Mock()
+        collector.inspector.get.side_effect = lambda pid: ProcDetail(pid, "gpu-client")
+        collector.inspector.needs_scan.return_value = False
+        collector.prober = Mock()
+        with patch.object(linux, "N", fake), \
+                patch("gputaskman.collector.BACKEND", "nvml"), \
+                patch("gputaskman.collector.sys.platform", "linux"):
+            return collector.sample()
+
     def test_native_linux_attributes_vram_and_engines_per_pid(self):
         fake = FakeNvml(compute=[proc(100, 3 * GiB), proc(200, 1 * GiB)],
                         graphics=[proc(200, 1 * GiB), proc(300, 256 << 20)],
@@ -157,6 +177,31 @@ class LinuxCountersTests(unittest.TestCase):
         self.assertEqual(per[300].engines["decode"], 20)
         self.assertTrue(all(g.attributed for g in per.values()))
         self.assertEqual(fake.util_calls, [0, 9])  # next poll asks only for newer samples
+
+    def test_collector_keeps_hidden_vram_unknown_and_engine_load_measured(self):
+        fake = FakeNvml(compute=[proc(100, NOT_AVAILABLE), proc(101, 2 * GiB)],
+                        samples=[sample(100, 47, enc=3, dec=5)])
+        snap = self.collect(fake)
+        data = to_dict(snap)
+        rows = {row["pid"]: row for row in data["processes"]}
+
+        self.assertIsNone(snap.attributed)
+        self.assertEqual(snap.vram_used, 4 * GiB)
+        self.assertIsNone(data["attributed"])
+        self.assertEqual(rows[101]["vram_bytes"], 2 * GiB)
+        self.assertIsNone(rows[100]["vram_bytes"])
+        self.assertFalse(rows[100]["vram_attributed"])
+        self.assertEqual(rows[100]["engines"], {"compute": 47, "encode": 3, "decode": 5})
+
+    def test_collector_preserves_measured_zero_process_memory(self):
+        fake = FakeNvml(compute=[proc(100, 0)], samples=[sample(100, 3)])
+        snap = self.collect(fake)
+        data = to_dict(snap)
+
+        self.assertEqual(snap.attributed, 0)
+        self.assertEqual(data["attributed"], 0)
+        self.assertEqual(data["processes"][0]["vram_bytes"], 0)
+        self.assertEqual(data["processes"][0]["gpu_pct"], 3)
 
     def test_hidden_per_process_memory_is_unknown_not_zero(self):
         fake = FakeNvml(compute=[proc(100, NOT_AVAILABLE), proc(101, None)])
