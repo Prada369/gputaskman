@@ -950,6 +950,52 @@ class MemoryTests(unittest.TestCase):
                                  selected == "missing")
                 self.assertEqual(to_dict(s)["attributed"], s.attributed)
 
+    def test_missing_shared_counter_keeps_dedicated_attribution_and_explains_paged(self):
+        for selected in ("preferred", "fallback", "missing"):
+            with self.subTest(selected=selected):
+                def add(query, path, user, handle):
+                    preferred, fallback = GpuCounters._COUNTERS["shared"]
+                    if path == preferred and selected != "preferred":
+                        return 1
+                    if path == fallback and selected == "missing":
+                        return 1
+                    return 0
+
+                pdh = SimpleNamespace(PdhOpenQueryW=lambda *args: 0, PdhAddEnglishCounterW=add,
+                                      PdhCollectQueryData=lambda *args: 0)
+                name = "pid_42_luid_0x0_0x1_phys_0"
+                data = {"dedicated": [(name, 128 * MiB)],
+                        "shared": [(name, 0)] if selected != "missing" else [],
+                        "committed": [(name, 256 * MiB)],
+                        "engine": [(name + "_eng_0_engtype_Compute", 10)],
+                        "a_dedicated": [("luid_0x0_0x1_phys_0", 512 * MiB)],
+                        "a_shared": [("luid_0x0_0x1_phys_0", 0)]}
+                with patch("gputaskman.pdh._load_pdh"), patch("gputaskman.pdh._pdh", pdh):
+                    counters = GpuCounters()
+                    self.assertEqual(counters.shared_counter_missing, selected == "missing")
+                    c = Collector.__new__(Collector)
+                    c.adapter = Adapter(1, "GPU", 0x10DE, 16 * GiB, 0, False)
+                    c.adapters = [c.adapter]
+                    c.gpu_index, c.scan_budget, c.host, c.host_status = 0, None, None, ""
+                    c.nvml = Mock(ok=False)
+                    c.counters = counters
+                    c.inspector, c.prober = Mock(), Mock()
+                    c.inspector.get.return_value = ProcDetail(42, "compute.exe")
+                    c.inspector.needs_scan.return_value = False
+                    with patch.object(counters, "_read", side_effect=lambda key: data.get(key, [])), \
+                            patch("gputaskman.collector.BACKEND", "wddm"):
+                        s = c.sample()
+                row = to_dict(s)["processes"][0]
+                self.assertEqual(s.attributed, 128 * MiB)
+                self.assertEqual(row["vram_bytes"], 128 * MiB)
+                self.assertEqual(row["gpu_pct"], 10)
+                self.assertEqual(row["shared_bytes"], 0 if selected == "preferred" else None)
+                self.assertEqual(row["paged_out_bytes"], 128 * MiB if selected == "preferred" else None)
+                self.assertEqual("per-process shared memory counters are unavailable" in s.counter_status,
+                                 selected == "missing")
+                if selected == "missing":
+                    self.assertIn("shared memory and Paged are unknown", to_text(s))
+
     def test_paged_is_clamped_commit_difference(self):
         gpu = ProcGpu(dedicated=100, shared=20, committed=150)
         self.assertEqual(gpu.paged_out, 30)

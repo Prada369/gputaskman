@@ -162,6 +162,7 @@ class GpuCounters:
                         self.fallback_counters.add(key)
                     break
         self.dedicated_counter_missing = "dedicated" not in self._handles
+        self.shared_counter_missing = "shared" not in self._handles
         _pdh.PdhCollectQueryData(self._query)  # rate counters need a baseline sample
 
     @staticmethod

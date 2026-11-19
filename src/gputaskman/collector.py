@@ -461,6 +461,10 @@ class Collector:
                 snap.counter_status = " ".join(filter(None, (
                     snap.counter_status, "Windows per-process dedicated memory counters are unavailable; "
                     "attributed VRAM is unknown.")))
+            if getattr(self.counters, "shared_counter_missing", False) is True:
+                snap.counter_status = " ".join(filter(None, (
+                    snap.counter_status, "Windows per-process shared memory counters are unavailable; "
+                    "shared memory and Paged are unknown.")))
         if self.drm_card is not None:
             snap.process_status = self.counters.drm.status
             if self.drm_card.intel and nv is not None:
