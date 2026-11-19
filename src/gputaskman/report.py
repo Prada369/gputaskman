@@ -161,7 +161,10 @@ def to_dict(s: Snapshot) -> dict:
                 "kv_bytes_per_token": p.llm.kv_per_token, "n_ctx": p.llm.n_ctx, "flags": p.llm.flags,
                 "server": dataclasses.asdict(p.llm.server) if p.llm.server else None,
                 "server_source": p.llm.server_source,
-                "log_source": p.llm.log_source, "notes": p.llm.notes,
+                "log_source": p.llm.log_source,
+                "log_event": ({"timestamp": p.llm.log.timestamp, "buffers": p.llm.log.buffers}
+                              if p.llm.log else None),
+                "notes": p.llm.notes,
             }
         procs.append(item)
     return {
@@ -298,7 +301,8 @@ def to_text(s: Snapshot, limit: int = 30) -> str:
             if gauges := server_gauge_text(sv):
                 out.append(f"   {gauges}")
         if p.llm.log_source:
-            out.append(f"   exact sizes from log: {p.llm.log_source}")
+            when = p.llm.log.timestamp if p.llm.log and p.llm.log.timestamp else "timestamp unavailable"
+            out.append(f"   load-log history: {p.llm.log_source} (event {when}; not current residency)")
         for n in p.llm.notes:
             out.append(f"   - {n}")
     return "\n".join(out)

@@ -862,7 +862,8 @@ class GpuTaskManager(App):
                 legend.append(f"{x.label} {gb(x.bytes)}", style="bold" if x.exact else "")
                 legend.append("  ")
             if v.log_source:
-                legend.append(f"(allocated sizes from {os.path.basename(v.log_source)})", style="green")
+                when = v.log.timestamp if v.log and v.log.timestamp else "timestamp unavailable"
+                legend.append(f"(load-log history at {when}; not current residency)", style="green")
             out.append(legend)
             if v.models:
                 mt = Table(box=None, padding=(0, 1), show_edge=False, header_style="bold grey70")

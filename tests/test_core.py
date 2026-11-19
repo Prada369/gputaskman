@@ -1370,11 +1370,13 @@ class ModelTests(unittest.TestCase):
                 "llama_context: CUDA0 compute buffer size = 5 MiB\n",
                 encoding="utf-8",
             )
-            self.assertEqual(parse_load_log(str(path)), {
+            parsed = parse_load_log(str(path))
+            self.assertIsNotNone(parsed)
+            self.assertEqual(parsed.buffers, {
                 "CPU_Mapped": {"weights": 30 * MiB},
                 "CUDA0": {"weights": 100 * MiB, "kv": 30 * MiB, "compute": 5 * MiB},
             })
-            self.assertIsNone(parse_load_log(str(path), not_before=path.stat().st_mtime + 10))
+            self.assertIsNone(parsed.timestamp)
 
 
 def gguf(arch: str, **meta) -> GgufInfo:
@@ -1872,26 +1874,61 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual([s.label for s in v.segments], ["weights", "compute buffers + runtime"])
         self.assertTrue(any("laya decision model" in n for n in v.notes))
 
-    def test_vulkan_log_does_not_label_unknown_overhead_as_cuda(self):
-        laya = gguf("modern-bert", **LAYA)
-        detail = ProcDetail(5, "llama-server.exe", models=[
-            MappedModel("laya.gguf", 1000, 0, True, kind="decision model")
-        ])
+    def test_unrelated_append_does_not_revive_old_load_log_block(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "server.log"
             path.write_text(
-                "load_tensors: Vulkan0 model buffer size = 10 MiB\n"
-                "load_tensors: Vulkan_Host model buffer size = 3 MiB\n"
-                "llama_context: Vulkan0 compute buffer size = 2 MiB\n",
+                "2026-01-01T10:00:00Z load_tensors: CUDA0 model buffer size = 900 MiB\n"
+                "2026-01-01T10:00:01Z llama_context: CUDA0 KV buffer size = 800 MiB\n"
+                "2026-01-02T10:00:00Z unrelated startup event\n",
+                encoding="utf-8",
+            )
+            detail = ProcDetail(5, "llama-server.exe",
+                                create_time=datetime(2026, 1, 2, 9, tzinfo=timezone.utc).timestamp())
+            view = build_view(detail, 20 * MiB, 0, None, str(path))
+        self.assertEqual(view.log.timestamp, "2026-01-01T10:00:00Z")
+        self.assertEqual(view.log.buffers["CUDA0"]["weights"], 900 * MiB)
+        self.assertFalse(any(s.exact or "CUDA0" in s.label for s in view.segments))
+        self.assertTrue(any("predates this process" in note for note in view.notes))
+
+    def test_newer_load_log_is_preserved_as_history_not_current_allocation(self):
+        laya = gguf("modern-bert", **LAYA)
+        detail = ProcDetail(5, "llama-server.exe",
+                            create_time=datetime(2026, 1, 2, 9, tzinfo=timezone.utc).timestamp(),
+                            models=[MappedModel("laya.gguf", 1000, 0, True, kind="decision model")])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "server.log"
+            path.write_text(
+                "2026-01-02T10:00:00Z load_tensors: Vulkan0 model buffer size = 10 MiB\n"
+                "2026-01-02T10:00:01Z load_tensors: Vulkan_Host model buffer size = 3 MiB\n"
+                "2026-01-02T10:00:02Z llama_context: Vulkan0 compute buffer size = 2 MiB\n",
                 encoding="utf-8",
             )
             with patch("gputaskman.llm.read_gguf", return_value=laya):
                 view = build_view(detail, 20 * MiB, 0, None, str(path))
-        self.assertEqual([(s.label, s.bytes) for s in view.segments], [
-            ("weights (Vulkan0)", 10 * MiB),
-            ("compute buffers (Vulkan0)", 2 * MiB),
-            ("runtime and other overhead", 8 * MiB),
-        ])
+        self.assertEqual(view.log.timestamp, "2026-01-02T10:00:00Z")
+        self.assertEqual(view.log.buffers["Vulkan0"]["weights"], 10 * MiB)
+        self.assertFalse(any(s.exact for s in view.segments))
+        self.assertFalse(any("Vulkan0" in s.label for s in view.segments))
+        self.assertTrue(any("does not prove current residency" in note for note in view.notes))
+        s = snapshot()
+        s.procs[0] = ProcRow(detail.pid, detail.name, classify(detail, {}), ProcGpu(dedicated=20 * MiB), detail, view)
+        event = to_dict(s)["processes"][0]["llm"]["log_event"]
+        self.assertEqual(event["timestamp"], "2026-01-02T10:00:00Z")
+        self.assertEqual(event["buffers"]["Vulkan0"]["weights"], 10 * MiB)
+        self.assertIn("load-log history", to_text(s))
+        self.assertIn("2026-01-02T10:00:00Z", to_text(s))
+
+    def test_untimestamped_load_log_is_not_attributed_to_current_process(self):
+        detail = ProcDetail(5, "llama-server.exe",
+                            create_time=datetime(2026, 1, 2, 9, tzinfo=timezone.utc).timestamp())
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "server.log"
+            path.write_text("load_tensors: CUDA0 model buffer size = 10 MiB\n", encoding="utf-8")
+            view = build_view(detail, 20 * MiB, 0, None, str(path))
+        self.assertEqual(view.log.buffers["CUDA0"]["weights"], 10 * MiB)
+        self.assertFalse(any(s.exact or "CUDA0" in s.label for s in view.segments))
+        self.assertTrue(any("no usable timestamp" in note for note in view.notes))
 
     def test_installed_models_are_candidates_only(self):
         with tempfile.TemporaryDirectory() as root:
