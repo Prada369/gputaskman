@@ -10,7 +10,7 @@ from gputaskman.collector import Collector, ProcRow, Snapshot, select_nv_device
 from gputaskman.dxgi import Adapter
 from gputaskman.nvml import NvDevice
 from gputaskman.gguf import GgufInfo
-from gputaskman.llm import LlmView, build_view
+from gputaskman.llm import LlmView, ServerProber, build_view
 from gputaskman.pdh import ProcGpu
 from gputaskman.procinfo import MappedModel, ProcDetail, _lib_name, _match_runtimes, classify
 from gputaskman.report import to_dict, to_text
@@ -330,7 +330,7 @@ class ContainerTests(unittest.TestCase):
 
     child = True
 
-    def snapshot(self, fake, detail=None):
+    def snapshot(self, fake, detail=None, *, prober=None):
         with patch.object(linux, "N", fake), patch.object(linux, "is_wsl", return_value=False):
             counters = linux.LinuxCounters()
         c = Collector.__new__(Collector)
@@ -343,9 +343,10 @@ class ContainerTests(unittest.TestCase):
         c.inspector = Mock()
         c.inspector.get.return_value = detail or ProcDetail(547, "python3")
         c.inspector.needs_scan.return_value = False
-        c.inspector.exclusive_ports.return_value = []
-        c.prober = Mock()
-        c.prober.get.return_value = c.prober.locked_port.return_value = None
+        c.inspector.exclusive_ports.return_value = c.inspector.get.return_value.ports
+        c.prober = prober if prober is not None else Mock()
+        if prober is None:
+            c.prober.get.return_value = c.prober.locked_port.return_value = None
         c._parent_ports = Mock(return_value=[])
         with patch.object(linux, "N", fake), patch.object(linux, "nvidia_holders", return_value={547}), \
                 patch.object(linux, "has_cuda", return_value=True), \
@@ -450,14 +451,52 @@ class ContainerTests(unittest.TestCase):
                 self.assertEqual(snap.procs[0].gpu.available, set())
                 self.assertEqual(snap.attributed, memory)
 
-    def test_unproven_owner_without_model_evidence_does_not_get_a_breakdown(self):
+    def test_recognized_runtime_probes_own_listener_without_model_files(self):
+        base = "http://127.0.0.1:8080"
+        responses = {
+            base + "/props": {"default_generation_settings": {"n_ctx": 4096}},
+            base + "/v1/models": {"data": [{"id": "api-only-model"}]},
+            base + "/slots": [],
+            base + "/metrics": None,
+        }
+        for name, runtimes in (("llama-server", []), ("python3", ["llama.cpp"])):
+            for memory in (3 * GiB, None):
+                with self.subTest(name=name, memory=memory), \
+                        patch("gputaskman.llm._get", side_effect=lambda url, **kw: responses[url]) as get, \
+                        patch("gputaskman.collector.build_view", wraps=build_view) as build:
+                    d = ProcDetail(547, name, runtimes=runtimes, ports=[8080])
+                    snap = self.snapshot(FakeNvml(compute=[proc(9000, memory)],
+                                                 samples=[sample(9000, 75)]), d, prober=ServerProber())
+                    self.assertEqual({call.args[0] for call in get.call_args_list}, set(responses))
+                    self.assertEqual(get.call_count, 4)
+                    self.assertEqual(build.call_args.args[1:3], (0, 0))
+                    self.assertFalse(build.call_args.kwargs["attributed"])
+                    local, host = to_dict(snap)["processes"]
+                    self.assertEqual(local["kind"], "LLM")
+                    self.assertEqual(local["llm"]["server"]["models"][0]["name"], "api-only-model")
+                    self.assertEqual(local["llm"]["server_source"], "process")
+                    self.assertEqual(local["llm"]["segments"], [])
+                    self.assertTrue(any("VRAM total is unknown" in n for n in local["llm"]["notes"]))
+                    self.assertFalse(local["vram_attributed"])
+                    self.assertIsNone(local["vram_bytes"])
+                    self.assertEqual(local["vram_inferred_bytes"], memory)
+                    self.assertIsNone(local["engines"])
+                    self.assertEqual(snap.procs[0].gpu.available, set())
+                    self.assertEqual((host["vram_bytes"], host["gpu_pct"]), (memory, 75))
+                    self.assertEqual(snap.attributed, memory)
+
+    def test_generic_process_with_only_model_hints_is_not_classified_or_probed(self):
         for sources in ([], ["path-arg"], ["installed"]):
-            with self.subTest(sources=sources), patch("gputaskman.collector.build_view") as build:
-                d = ProcDetail(547, "llama-server",
-                               models=[MappedModel("/m/x.gguf", GiB, None, True, sources=sources)])
-                snap = self.snapshot(FakeNvml(compute=[proc(9000, 3 * GiB)]), detail=d)
+            with self.subTest(sources=sources), patch("gputaskman.collector.build_view") as build, \
+                    patch("gputaskman.llm._get") as get, patch("gputaskman.llm.read_gguf") as read:
+                d = ProcDetail(547, "python3", runtimes=["CUDA"], ports=[8080],
+                               models=[MappedModel("/m/x.gguf", GiB, None, True, sources=sources, kind="LLM")])
+                snap = self.snapshot(FakeNvml(compute=[proc(9000, 3 * GiB)]), d, prober=ServerProber())
+                self.assertEqual(snap.procs[0].kind, "compute")
                 self.assertIsNone(snap.procs[0].llm)
                 build.assert_not_called()
+                get.assert_not_called()
+                read.assert_not_called()
 
     def test_api_daemon_does_not_use_guessed_memory_as_a_budget(self):
         # An independently detected API daemon may still report loaded IDs, without a guessed budget.

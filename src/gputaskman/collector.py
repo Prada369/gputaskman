@@ -227,15 +227,16 @@ def _llm_wanted(row, shared_is_spill: bool) -> bool:
     not diffusion, and with measured GPU memory. Where spilled system memory is a counter of its own
     (WDDM, discrete DRM cards) both the dedicated and shared counters must be present; on an integrated
     GPU system memory is the memory and there is no spill counter, so dedicated alone suffices.
-    Independent model evidence on an inferred-owner row can still supply metadata and estimates,
-    without a measured memory budget. Foundry Local can report loaded IDs without counters or files."""
+    Independent model evidence or a recognized LLM runtime can still supply metadata or API discovery
+    on an inferred-owner row, without a measured memory budget. Foundry Local can report loaded IDs
+    without counters or files."""
     if row.detail.is_diffusion:
         return False
     if row.detail.foundry_local:
         return True  # Loaded-model identity does not require memory counters or a mapped file.
     if row.kind not in AI_KINDS or not (row.detail.has_model_evidence or row.kind == "LLM"):
         return False
-    if not row.gpu.attributed and row.gpu.inferred_by and row.detail.has_model_evidence:
+    if not row.gpu.attributed and row.gpu.inferred_by:
         return True
     need = {"dedicated", "shared"} if shared_is_spill else {"dedicated"}
     return need <= row.gpu.available
