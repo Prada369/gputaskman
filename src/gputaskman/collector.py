@@ -421,12 +421,6 @@ class Collector:
         )
 
         snap.host_status = self.host_status
-        if self.backend == "nvml":
-            process_status = getattr(self.counters, "process_status", {})
-            process_status = process_status.get(luid, "") if isinstance(process_status, dict) else ""
-            if process_status:
-                snap.process_memory_available = False
-                snap.counter_status = process_status
         if BACKEND == "wsl" and (not self.adapter or self.adapter.vendor_id == VENDOR_AMD):
             snap.counter_status = " ".join(dict.fromkeys(filter(None, (amdsmi_status(), self.amdsmi.status))))
             if self.adapter is None:
@@ -465,6 +459,12 @@ class Collector:
         elif self.backend == "ascend":
             snap.process_memory_available = False
             snap.counter_status = "Ascend chip unavailable: npu-smi could not match the selected adapter"
+        if self.backend == "nvml":
+            process_status = getattr(self.counters, "process_status", {})
+            process_status = process_status.get(luid, "") if isinstance(process_status, dict) else ""
+            if process_status:
+                snap.process_memory_available = False
+                snap.counter_status = process_status
         live = [(pid, g) for pid, g in procs.items() if _is_live(g) or pid in integrated_local_pids]
         live.sort(key=lambda x: -(x[1].shown_vram or 0))
         for pid, g in live:
