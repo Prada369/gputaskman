@@ -147,7 +147,7 @@ All eight trend charts are visible by default. They stack in narrow terminals an
 share rows when there is room. Click the **Charts** dropdown to show all charts or
 one metric; `c` cycles the same choices. A blank sample means no reading; zero is
 drawn at the baseline. Percentage charts use 0–100%, temperature uses 0–120°C,
-and the power and SM clock scales are shown below the charts. In short terminals,
+and the power and clock scales are shown below the charts. In short terminals,
 scroll the dashboard or inspector without losing the process list.
 """
 
@@ -432,9 +432,21 @@ class GpuTaskManager(App):
         self.hist_vram.append(100 * snap.vram_used / snap.vram_total
                               if snap.vram_total and snap.vram_used is not None else None)
 
+    @staticmethod
+    def _clock_kind(snap: Snapshot) -> str:
+        if snap.adapter and snap.adapter.vendor_id == 0x1002:
+            return "GFX"
+        if snap.nv and snap.nv.source == "Intel sysfs":
+            return "GT"
+        return "SM"
+
     def render_dashboard(self) -> None:
-        amd = bool(self.snapshots[0].adapter and self.snapshots[0].adapter.vendor_id == 0x1002)
-        clock_label = "SM/GFX clock" if len(self.snapshots) > 1 else "GFX clock" if amd else "SM clock"
+        clock_kinds = {self._clock_kind(snap) for snap in self.snapshots}
+        if len(self.snapshots) > 1:
+            clock_label = ("/".join(kind for kind in ("SM", "GFX", "GT") if kind in clock_kinds) + " clock"
+                           if "GT" in clock_kinds else "SM/GFX clock")
+        else:
+            clock_label = f"{self._clock_kind(self.snapshots[0])} clock"
         if getattr(self, "_clock_label", None) != clock_label:
             self._clock_label = clock_label
             selector = self.query_one("#chart-mode", Select)
@@ -443,7 +455,7 @@ class GpuTaskManager(App):
                 (clock_label if self.CHARTS[index] == "SM clock" else self.CHARTS[index], index)
                 for index in self.available_charts)])
             selector.value = selected
-        self._amd_chart_labels = amd
+        self._clock_chart_label = self._clock_kind(self.snapshots[0])
         devices = []
         for index, snap in enumerate(self.snapshots):
             if len(self.snapshots) > 1:
@@ -649,7 +661,7 @@ class GpuTaskManager(App):
             for index, snap in enumerate(self.snapshots):
                 self.snap = snap
                 self._use_history(index)
-                self._amd_chart_labels = bool(snap.adapter and snap.adapter.vendor_id == 0x1002)
+                self._clock_chart_label = self._clock_kind(snap)
                 grid, note = self._chart_content()
                 charts.extend([Text(f"GPU {index}", style="bold"), grid])
                 notes.append(f"GPU {index}: {note}")
@@ -678,8 +690,8 @@ class GpuTaskManager(App):
             values, scale, unit, style = self.chart_series(index, self.snap.nv)
             current = values[-1] if values else None
             name = self.CHARTS[index]
-            if getattr(self, "_amd_chart_labels", False) and name == "SM clock":
-                name = "GFX clock"
+            if name == "SM clock":
+                name = f"{self._clock_chart_label} clock"
             cell = Text(f"{name:<12} ", style=style)
             cell.append(f"{format_metric(current, '.0f', unit):>8} ", style="bold")
             cell.append(spark(values, max(1, cell_width - 22), scale))
@@ -691,7 +703,7 @@ class GpuTaskManager(App):
         note = (
             "Recent samples · blank = no reading" if self.snap.backend == "metal" else
             f"Recent samples · blank = no reading · power 0–{power_scale:.0f} W · "
-            f"{'GFX' if getattr(self, '_amd_chart_labels', False) else 'SM'} clock 0–{clock_scale:.0f} MHz"
+            f"{self._clock_chart_label} clock 0–{clock_scale:.0f} MHz"
         )
         return grid, note
 

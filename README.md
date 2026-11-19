@@ -588,7 +588,7 @@ and SM/GFX clock, throttling alerts, charts, processes, and process inspection r
 The header border names the active mode; press `m` again to restore the full details.
 This is a session-only display toggle, applies to every GPU, and does not change collection
 or one-shot text/JSON output.
-All eight history charts are shown by default: GPU, SM clock (GFX clock on AMD), VRAM, memory activity,
+All eight history charts are shown by default: GPU, SM clock (GFX on AMD, GT on Intel), VRAM, memory activity,
 temperature, power, encoder, and decoder. They stack in narrow terminals and share rows as
 the window widens. Click the **Charts** dropdown to focus on one metric or return to **All charts**.
 A blank sample means no reading; zero is drawn at the baseline. Percentages use a 0–100%
