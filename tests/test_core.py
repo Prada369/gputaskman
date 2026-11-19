@@ -2445,6 +2445,43 @@ class UiTests(unittest.IsolatedAsyncioTestCase):
                 app.hist_clock.clear()
                 self.assertEqual(app.chart_series(index, None)[1], 1)
 
+    async def test_intel_gt_clock_labels_update_with_selected_gpu(self):
+        with patch.object(GpuTaskManager, "poll"):
+            app = GpuTaskManager()
+            async with app.run_test(size=(117, 59)) as pilot:
+                index = app.CHARTS.index("SM clock")
+                selector = app.query_one("#chart-mode", Select)
+                selector.value = index
+
+                intel = snapshot()
+                intel.adapter = Adapter(0, "Intel GPU", 0x8086, 8 * GiB, 0, False)
+                intel.nv = NvDevice(index=0, source="Intel sysfs", sm_clock=1200, sm_clock_max=2400)
+                app.apply(intel)
+                await pilot.pause()
+                self.assertEqual(next(label for label, value in selector._options if value == index), "GT clock")
+                self.assertIn("GT 1200/2400 MHz", "\n".join(
+                    line.plain for line in app.render_device(intel).renderables))
+                self.assertIn("GT clock", self.chart_text(app))
+                self.assertIn("GT clock 0–2400 MHz", str(app.query_one("#chart-note", Static).content))
+
+                amd = snapshot()
+                amd.adapter = Adapter(1, "AMD GPU", 0x1002, 8 * GiB, 0, False)
+                amd.nv = NvDevice(index=1, source="AMD sysfs", gfx_clock=900, sm_clock_max=1800)
+                app.apply(amd)
+                await pilot.pause()
+                self.assertEqual(next(label for label, value in selector._options if value == index), "GFX clock")
+                self.assertIn("GFX clock", self.chart_text(app))
+                self.assertIn("GFX clock 0–1800 MHz", str(app.query_one("#chart-note", Static).content))
+
+                nvidia = snapshot()
+                nvidia.adapter = Adapter(2, "NVIDIA GPU", 0x10DE, 8 * GiB, 0, False)
+                nvidia.nv = NvDevice(index=2, source="NVML", sm_clock=1500, sm_clock_max=3000)
+                app.apply(nvidia)
+                await pilot.pause()
+                self.assertEqual(next(label for label, value in selector._options if value == index), "SM clock")
+                self.assertIn("SM clock", self.chart_text(app))
+                self.assertIn("SM clock 0–3000 MHz", str(app.query_one("#chart-note", Static).content))
+
     async def test_row_highlight_after_the_inspector_is_gone_is_ignored(self):
         # During teardown a queued RowHighlighted can arrive after the inspector was removed
         # (observed on Windows 3.11 CI). It must not raise NoMatches out of run_test.
