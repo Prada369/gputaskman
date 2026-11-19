@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import json
 import plistlib
+import subprocess
 import unittest
 from unittest.mock import patch
 
 from gputaskman import macos
-from gputaskman.collector import ProcRow, Snapshot
+from gputaskman.collector import Collector, ProcRow, Snapshot
 from gputaskman.pdh import ProcGpu
-from gputaskman.procinfo import ProcDetail, _lib_name, _match_runtimes
-from gputaskman.report import to_dict, to_text
+from gputaskman.procinfo import ProcDetail, ProcInspector, _lib_name, _match_runtimes
+from gputaskman.report import dump, to_dict, to_text
 
 GiB = 1 << 30
 ME, ROOT = 501, 0
@@ -57,6 +58,11 @@ class FakePoller:
 
 
 class ParseTests(unittest.TestCase):
+    def test_ioreg_nonzero_exit_is_not_an_empty_query(self):
+        result = subprocess.CompletedProcess(["ioreg"], 1, stdout=b"")
+        with patch.object(macos.subprocess, "run", return_value=result):
+            self.assertIsNone(macos._ioreg("-l", "-c", "AGXDeviceUserClient"))
+
     def test_ioreg_plist_round_trip(self):
         entries = plistlib.loads(plistlib.dumps(accel(99, 5494423552)))
         dev = macos.parse_accelerator(entries)
@@ -235,6 +241,36 @@ class CountersTests(unittest.TestCase):
         later = [client(1, "python", 11 * 10**9, cid=7)]
         procs, _ = self.sample(c, accel(), later, now=102.0)
         self.assertAlmostEqual(procs[macos.ADAPTER_KEY][1].gpu_pct, 50.0)
+
+    def test_snapshot_distinguishes_failed_client_query_from_successful_empty_query(self):
+        counters, _ = self.counters({}, {})
+        collector = Collector.__new__(Collector)
+        collector.adapter = None
+        collector.adapters = []
+        collector.counters = counters
+        collector.host = None
+        collector.host_status = ""
+        collector.scan_budget = None
+        collector.inspector = ProcInspector()
+        readings = [accel(28, 3 * GiB), None, accel(29, 3 * GiB), []]
+        with patch("gputaskman.collector.BACKEND", "metal"), \
+                patch.object(macos, "_ioreg", side_effect=readings), \
+                patch.object(macos, "physical_memory", return_value=16 * GiB):
+            failed = collector.sample()
+            empty = collector.sample()
+
+        failed_json = json.loads(dump(failed, as_json=True))
+        self.assertEqual(failed_json["vram_used"], 3 * GiB)
+        self.assertEqual(failed_json["processes"], [])
+        self.assertIsNone(failed_json["attributed"])
+        self.assertIn("Metal client query failed", failed_json["counter_status"])
+        self.assertIn(failed_json["counter_status"], to_text(failed))
+
+        empty_json = json.loads(dump(empty, as_json=True))
+        self.assertEqual(empty_json["vram_used"], 3 * GiB)
+        self.assertEqual(empty_json["processes"], [])
+        self.assertEqual(empty_json["attributed"], 0)
+        self.assertIsNone(empty_json["counter_status"])
 
 
 class PollerTests(unittest.TestCase):
