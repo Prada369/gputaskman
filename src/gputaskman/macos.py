@@ -359,8 +359,11 @@ class MacCounters:
                     dirty, swapped = size
                     g.dedicated = float(dirty)  # dirty only; swapped is not resident graphics memory
                     g.graphics_swapped = None if swapped is None else float(swapped)
+                if size is None:
+                    g.available.discard("dedicated")
             else:
                 g.attributed = False  # footprint needs root for other users' processes
+                g.available.discard("dedicated")
                 if (pct is None or pct < 0.5) and self._name(pid).lower() not in ALWAYS_SHOWN:
                     continue
             procs[ADAPTER_KEY][pid] = g
