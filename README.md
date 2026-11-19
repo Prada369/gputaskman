@@ -484,9 +484,9 @@ macOS exposes without root:
 
 Other users' processes (WindowServer, system daemons) show GPU% with memory `n/a`: `footprint` needs
 root for them. Idle ones are left out of the table, except WindowServer. Run with `sudo` to measure
-every process's memory. An unmeasured or inaccessible process keeps the attributed total unknown,
-not a partial sum; device allocation and per-process GPU time remain independent. `footprint` takes
-~70 ms per process, so it runs in a background thread:
+every process's memory. The attributed total is unknown whenever a Metal client's footprint is
+unmeasured, even if its row is hidden. Device allocation and per-process GPU time remain independent.
+`footprint` takes ~70 ms per process, so it runs in a background thread:
 busy processes and new ones every pass (~2 s), idle ones every 30 s. A new process shows `n/a` for a
 second or two until its first measurement; a single failed measurement keeps the last size, and three
 in a row back off for a minute. Measurements are tied to the process's start time, so a reused PID

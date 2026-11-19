@@ -37,7 +37,49 @@ class Inspector:
         pass
 
 
+def fixture_collector(counters):
+    collector = Collector.__new__(Collector)
+    collector.adapter = None
+    collector.adapters = []
+    collector.counters = counters
+    collector.host = None
+    collector.host_status = ""
+    collector.scan_budget = 0
+    collector.inspector = Inspector()
+    return collector
+
+
 class MacFootprintCollectorTests(unittest.TestCase):
+    def test_idle_other_user_client_hides_row_but_invalidates_total_until_gone(self):
+        now = 0.0
+        idle = [client(103, "backupd", 0, 4)]
+        poller = macos.FootprintPoller(run=lambda *args, **kwargs: self.fail("unexpected footprint probe"))
+        with patch.object(poller, "start"), \
+                patch.object(macos, "time", SimpleNamespace(monotonic=lambda: now)), \
+                patch.object(macos, "_ioreg", side_effect=[accel(), idle, accel(), idle, accel(), []]), \
+                patch.object(macos, "physical_memory", return_value=16 * GiB), \
+                patch.object(macos.MacCounters, "_name", return_value="backupd"), \
+                patch("gputaskman.collector.BACKEND", "metal"):
+            counters = macos.MacCounters(
+                poller=poller, uid=ME, root=False, identity=lambda pid: "same", owner=lambda pid: OTHER,
+            )
+            self.addCleanup(counters.close)
+            collector = fixture_collector(counters)
+            now += 2
+            hidden = collector.sample()
+            now += 2
+            recovered = collector.sample()
+
+        for snap, attributed in ((hidden, None), (recovered, 0)):
+            data = to_dict(snap)
+            self.assertEqual(data["processes"], [])
+            self.assertEqual(snap.attributed, attributed)
+            self.assertEqual(data["attributed"], attributed)
+            self.assertEqual(data["vram_used"], 9 * GiB)
+            self.assertEqual(snap.nv.util_gpu, 75)
+        self.assertIn("idle Metal clients", to_dict(hidden)["counter_status"])
+        self.assertIsNone(to_dict(recovered)["counter_status"])
+
     def test_unknown_zero_and_recovered_footprints_through_json(self):
         measurements = {100: 4 * GiB, 101: None, 102: 0}
         now = 0.0
@@ -63,19 +105,7 @@ class MacFootprintCollectorTests(unittest.TestCase):
             )
         counters._names[103] = "WindowServer"
 
-        collector = Collector.__new__(Collector)
-        collector.adapter = None
-        collector.adapters = []
-        collector.counters = counters
-        collector.drm_card = None
-        collector.ascend_chip = None
-        collector._mac_driver = "macOS fixture"
-        collector._windows_driver = ""
-        collector.host = None
-        collector.host_status = ""
-        collector.scan_budget = 0
-        collector.gpu_index = 0
-        collector.inspector = Inspector()
+        collector = fixture_collector(counters)
 
         def clients(ticks, include_other=True):
             entries = [

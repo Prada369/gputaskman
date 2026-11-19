@@ -292,6 +292,7 @@ class MacCounters:
 
     def sample(self, accel: list | None = None, clients: list | None = None,
                now: float | None = None) -> tuple[dict[int, dict[int, ProcGpu]], dict[int, AdapterGpu]]:
+        self.hidden_unmeasured = False
         now = time.monotonic() if now is None else now  # a rate: immune to wall-clock adjustments
         accel = _ioreg("-d", "1", "-c", "IOAccelerator") if accel is None else accel
         clients = _ioreg("-l", "-c", "AGXDeviceUserClient") if clients is None else clients
@@ -365,6 +366,7 @@ class MacCounters:
                 g.attributed = False  # footprint needs root for other users' processes
                 g.available.discard("dedicated")
                 if (pct is None or pct < 0.5) and self._name(pid).lower() not in ALWAYS_SHOWN:
+                    self.hidden_unmeasured = True
                     continue
             procs[ADAPTER_KEY][pid] = g
         self._prev, self._last = current, now

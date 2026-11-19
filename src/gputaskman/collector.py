@@ -459,6 +459,9 @@ class Collector:
         elif self.backend == "ascend":
             snap.process_memory_available = False
             snap.counter_status = "Ascend chip unavailable: npu-smi could not match the selected adapter"
+        if BACKEND == "metal" and self.counters.hidden_unmeasured:
+            snap.process_memory_available = False
+            snap.counter_status = "Some idle Metal clients are hidden because their memory cannot be measured."
         live = [(pid, g) for pid, g in procs.items() if _is_live(g) or pid in integrated_local_pids]
         live.sort(key=lambda x: -(x[1].shown_vram or 0))
         for pid, g in live:
