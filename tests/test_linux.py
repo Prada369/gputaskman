@@ -255,9 +255,18 @@ class ContainerTests(unittest.TestCase):
         # 564 is an NVML-only tool (nvidia-smi, this monitor): it holds the devices but has no CUDA context
         per = self.sample(c, fake, holders={547, 563, 564}, cuda={547, 563})
         self.assertEqual({pid: (g.dedicated, g.inferred_by) for pid, g in per.items()},
-                         {547: (GiB, "consistent"), 563: (2 * GiB, "consistent")})
+                         {547: (GiB, "order"), 563: (2 * GiB, "order")})
         self.assertEqual(per[563].engines["compute"], 95)  # utilization follows the match
         self.assertEqual(set(c.outside[KEY]), {1145, 1360})  # never looked up in the container's /proc
+
+    def test_equal_counts_do_not_prove_context_ownership(self):
+        # A local libcuda user can hold a device without a context; the sole NVML PID may be another container.
+        fake = FakeNvml(compute=[proc(9000, 3 * GiB)])
+        with patch.object(linux, "N", fake), patch.object(linux, "is_wsl", return_value=False):
+            c = linux.LinuxCounters()
+        per = self.sample(c, fake, holders={547}, cuda={547})
+        self.assertEqual((per[547].dedicated, per[547].inferred_by), (3 * GiB, "order"))
+        self.assertEqual(c.outside, {})
 
     def test_extra_outside_compute_is_a_guess_until_a_start_event(self):
         fake = FakeNvml(compute=[proc(9000, GiB), proc(2029701, 3 * GiB)])  # 9000: another container
@@ -286,7 +295,7 @@ class ContainerTests(unittest.TestCase):
             c = linux.LinuxCounters()
         per = self.sample(c, fake, holders={10, 100}, cuda={10, 100})
         self.assertEqual({pid: (g.dedicated, g.inferred_by) for pid, g in per.items()},
-                         {10: (GiB, "consistent"), 100: (4 * GiB, "consistent")})
+                         {10: (GiB, "order"), 100: (4 * GiB, "order")})
 
     def test_namespace_detection(self):
         linux.in_child_pid_namespace.cache_clear()

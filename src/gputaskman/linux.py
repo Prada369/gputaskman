@@ -228,11 +228,12 @@ def has_cuda(pid: int) -> bool:
 
 class PidMatcher:
     """Containers: NVML reports *host* PIDs, which mean nothing in the container's /proc. Both PID
-    namespaces number processes in creation order, so the container's CUDA processes are matched to
+    namespaces number processes in creation order, so the container's local candidates are matched to
     NVML's unresolved PIDs by order. A match is sure ("consistent") when a new NVML PID and a new local
-    CUDA process appear together (kept while both live) or the counts are equal; otherwise newest is
-    paired with newest as an "order" guess, and leftover NVML PIDs belong to processes outside
-    this container (other containers, the host's display server)."""
+    candidate appear together (kept while both live). Equal counts alone do not prove that the local
+    candidate owns an NVML context: a device handle and mapped libcuda are not proof of context ownership.
+    Other matches pair newest with newest as an "order" guess; leftover NVML PIDs are outside this
+    container (other containers, the host's display server)."""
 
     def __init__(self) -> None:
         self.pairs: dict[int, int] = {}  # host pid -> local pid, from start events
@@ -253,9 +254,8 @@ class PidMatcher:
         out = {h: (l, "consistent") for h, l in self.pairs.items()}
         rest_h = sorted((h for h in host if h not in self.pairs), reverse=True)  # newest first
         rest_l = sorted((p for p in local if p not in self.pairs.values()), reverse=True)
-        sure = len(rest_h) == len(rest_l)
         for h, l in zip(rest_h, rest_l):
-            out[h] = (l, "consistent" if sure else "order")
+            out[h] = (l, "order")
         return out, rest_h[len(rest_l):]
 
 
