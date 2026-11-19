@@ -578,7 +578,9 @@ class Collector:
         vm_workers = [pid for pid in procs if hs.names.get(pid, "").lower() == "vmwp"]
         host_rows: list[ProcRow] = []
         for pid, g in procs.items():
-            if not _is_live(g):
+            # Keep large commitments visible even when the residency inputs needed for Paged are missing.
+            committed_only_activity = "committed" in g.available and g.committed >= 16 * MiB and not g.paged_available
+            if not _is_live(g) and not committed_only_activity:
                 continue
             raw = hs.names.get(pid, "?")
             if raw.lower() == "vmwp":

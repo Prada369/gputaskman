@@ -13,7 +13,7 @@ from .pdh import ProcGpu
 from .tcc import TccAdapter
 
 
-WSL_HOST_NOTE = ("WSL + Windows host counters: 'WSL VM' is the exact total of Linux GPU memory (all distros). "
+WSL_HOST_NOTE = ("WSL + Windows host counters: 'WSL VM' VRAM, when available, is the exact total across all Linux distros. "
                  "Linux rows get their size by matching the VM's GPU contexts (* matched, ? guess). "
                  "W: rows are Windows processes.")
 

@@ -342,11 +342,15 @@ process, `vmwp.exe`. When WSL interop is enabled (`/proc/sys/fs/binfmt_misc/WSLI
 `enabled`), gputaskman starts one long-lived `powershell.exe` that reads the Windows GPU counters
 through the same PDH array API as the Windows backend and streams them back once a second:
 
-- **WSL VM (`vmwp.exe`)** is the exact total of Linux GPU memory, across every distro, WSLg, and
-  Docker Desktop.
+- **WSL VM (`vmwp.exe`)** reports the exact total of Linux GPU memory, across every distro, WSLg,
+  and Docker Desktop, when the host provides its Local Usage counter.
 - **Windows apps** appear as `W:<pid>` rows with their VRAM, shared system memory, paged, and engine load.
   Windows and Linux PIDs are separate namespaces, so the prefix keeps them apart.
 - **Linux rows** get a size by matching `vmwp.exe`'s GPU contexts to Linux processes (below).
+
+Each host counter is tracked separately: missing readings are `null` in JSON and `n/a` or blank on
+screen, not measured zeros. Engine load can still be available when memory is unknown. Paged is an
+estimate shown only when Local Usage, Non Local Usage, and Total Committed were all observed.
 
 The first host sample takes about 2.5 s; the TUI shows `starting` until then, and `--once` waits
 for it. The host adapter is paired with the NVML or AMD SMI device by memory usage, because WSL's adapter

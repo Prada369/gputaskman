@@ -53,15 +53,32 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(s.adapters[RTX].dedicated, 3.0 * GiB)
         self.assertEqual(s.names[24820], "vmwp")
 
+    def test_paged_requires_each_memory_counter(self):
+        memory = [("local usage", 8 * MiB), ("non local usage", 2 * MiB), ("total committed", 64 * MiB)]
+        for missing in (None, "local usage", "non local usage", "total committed"):
+            with self.subTest(missing=missing):
+                sample = parse_line(line([[counter, f"pid_42_{LUID}", value]
+                                          for counter, value in memory if counter != missing], {}))
+                gpu = sample.procs[RTX][42]
+                self.assertEqual(gpu.paged_available, missing is None)
+                self.assertEqual(gpu.paged_out, 54 * MiB if missing is None else 0)
+        sample = parse_line(line([["total committed", f"pid_42_{LUID}", 64 * MiB]], {}))
+        gpu = sample.procs[RTX][42]
+        self.assertEqual(gpu.available, {"committed"})
+        self.assertFalse(gpu.paged_available)
+
     def test_extreme_engine_counter_is_unknown_without_rejecting_normal_overshoot(self):
         sample = parse_line(line([
-            ["utilization percentage", f"pid_42_{LUID}_eng_0_engtype_3D", 18_465_941_443_552.6],
-            ["utilization percentage", f"pid_42_{LUID}_eng_1_engtype_Compute", 50.0],
+            ["local usage", f"pid_42_{LUID}", 5 * MiB],
+            ["utilization percentage", f"pid_42_{LUID}_eng_0_engtype_3D", 10.0],
+            ["utilization percentage", f"pid_42_{LUID}_eng_1_engtype_Compute", 18_465_941_443_552.6],
+            ["utilization percentage", f"pid_42_{LUID}_eng_2_engtype_Copy", 50.0],
             ["utilization percentage", f"pid_43_{LUID}_eng_0_engtype_3D", 312.0],
         ], {}))
         invalid = sample.procs[RTX][42]
         self.assertEqual(invalid.engines, {})
-        self.assertNotIn("engine", invalid.available)
+        self.assertEqual(invalid.available, {"dedicated"})
+        self.assertEqual(invalid.shown_vram, 5 * MiB)
         self.assertIn("outside the supported 0-1000% range", invalid.engine_reason)
         self.assertEqual(sample.procs[RTX][43].engines["3d"], 312.0)
 
@@ -69,6 +86,11 @@ class ParseTests(unittest.TestCase):
         self.assertIsNone(parse_line("WARNING: something"))
         self.assertIsNone(parse_line("[1, 2]"))
         self.assertEqual(parse_line(line([["local usage"]], {})).procs, {})
+
+    def test_adapter_zero_is_distinct_from_missing(self):
+        sample = parse_line(line([["dedicated usage", LUID, 0]], {}))
+        self.assertEqual(sample.adapters[RTX].dedicated, 0)
+        self.assertIsNone(sample.adapters[RTX].shared)
 
 
 class MatchTests(unittest.TestCase):
@@ -406,6 +428,41 @@ class HostRowTests(unittest.TestCase):
         data = to_dict(snap)
         self.assertEqual({p["host"] for p in data["processes"]}, {None, "windows"})
         self.assertEqual(data["host_status"], "ok")
+
+    def test_partial_host_counters_and_measured_zeros_survive_reporting(self):
+        sample = parse_line(line([
+            ["dedicated usage", LUID, 3 * GiB],
+            ["shared usage", LUID, 0],
+            ["utilization percentage", f"pid_42_{LUID}_eng_0_engtype_3D", 15],
+            ["local usage", f"pid_43_{LUID}", 8 * MiB],
+            ["local usage", f"pid_44_{LUID}", 0],
+            ["non local usage", f"pid_44_{LUID}", 32 * MiB],  # active row despite zero VRAM and engine load
+            ["total committed", f"pid_44_{LUID}", 32 * MiB],
+            ["utilization percentage", f"pid_44_{LUID}_eng_0_engtype_3D", 0],
+            ["local usage", f"pid_45_{LUID}", 8 * MiB],
+            ["non local usage", f"pid_45_{LUID}", 0],
+            ["total committed", f"pid_45_{LUID}", 0],
+            ["total committed", f"pid_46_{LUID}", 64 * MiB],
+        ], {}))
+        snap = self.snap()
+        self.collector(FakeStream(sample))._add_host_rows(snap)
+        data = to_dict(snap)
+        self.assertEqual(data["shared_used"], 0)
+        self.assertIsNone(data["attributed"])  # the engine-only row's missing VRAM cannot count as zero
+        rows = {p["pid"]: p for p in data["processes"] if p["host"] == "windows"}
+        fields = ("vram_bytes", "shared_bytes", "committed_bytes", "paged_out_bytes", "gpu_pct", "engines")
+        for pid, expected in {
+            42: (None, None, None, None, 15, {"3d": 15}),
+            43: (8 * MiB, None, None, None, None, None),
+            44: (0, 32 * MiB, 32 * MiB, 0, 0, {}),
+            45: (8 * MiB, 0, 0, 0, None, None),
+            46: (None, None, 64 * MiB, None, None, None),
+        }.items():
+            with self.subTest(pid=pid):
+                self.assertEqual(tuple(rows[pid][field] for field in fields), expected)
+        text_rows = {row.split()[0]: row.split() for row in to_text(snap).splitlines()
+                     if row.lstrip().startswith("W:")}
+        self.assertEqual(text_rows["W:42"][-4:], ["n/a", "N/A", "N/A", "15"])
 
     def test_linux_process_gets_matched_vram(self):
         # contexts newest first: this monitor's own 0-byte NVML context, then the workload (3 GB)
