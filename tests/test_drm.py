@@ -754,6 +754,27 @@ class DrmEdgeCaseTests(unittest.TestCase):
                 self.assertEqual(g.resident_vram, 256 * 1024 * 1024)
                 self.assertEqual(g.resident_gtt, 64 * 1024)
 
+    def test_inherited_client_without_id_is_not_attributed_to_either_process(self):
+        valid = _fdinfo(7, "PDEV", vram=256 * 1024, gtt=64)
+        for text in (
+            valid.replace("drm-client-id:\t7\n", ""),
+            valid.replace("drm-client-id:\t7", "drm-client-id:\tnot-a-number"),
+        ):
+            with self.subTest(text=text), tempfile.TemporaryDirectory() as tmp:
+                card, _, counters = self._counters(Path(tmp), [(100, 5, text), (200, 9, text)])
+                procs, adapters = counters.sample()
+                rows = procs[card.key]
+                self.assertEqual(set(rows), {100, 200})
+                for pid in (100, 200):
+                    g = rows[pid]
+                    self.assertEqual(g.drm_reason, drm.REASON_CLIENT_ID)
+                    self.assertFalse(g.attributed)
+                    self.assertEqual(g.dedicated, 0)
+                    self.assertNotIn("dedicated", g.available)
+                    self.assertEqual(g.resident_vram, 256 * 1024 * 1024)
+                self.assertEqual(sum(g.dedicated for g in rows.values()), 0)
+                self.assertEqual(adapters[card.key].dedicated, GiB)
+
     def test_duplicate_unidentified_descriptors_are_not_summed(self):
         text = _fdinfo(7, "PDEV", vram=256 * 1024, gtt=64)
         text = text.replace("drm-client-id:\t7\n", "")
