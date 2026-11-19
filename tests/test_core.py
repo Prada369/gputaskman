@@ -1162,6 +1162,28 @@ class PathArgumentTests(unittest.TestCase):
         # argv[0] may itself name a model-like executable; it is not an argument.
         self.assertEqual(_models_from_path_args(ProcDetail(123, cmdline=[str(self.path)])), [])
 
+    def test_unobserved_model_residency_is_unknown_but_measured_zero_is_preserved(self):
+        detail = self.detail("--model", self.path)
+        self.scan(detail)
+        self.assertIsNone(detail.models[0].resident)
+        s = snapshot()
+        s.procs[0].detail = detail
+        self.assertIsNone(to_dict(s)["processes"][0]["model_files"][0]["resident"])
+
+        measured = self.detail("--model", self.path)
+        self.scan(measured, [SimpleNamespace(path=str(self.path), rss=0)])
+        self.assertEqual(measured.models[0].resident, 0)
+        s.procs[0].detail = measured
+        self.assertEqual(to_dict(s)["processes"][0]["model_files"][0]["resident"], 0)
+
+    def test_api_only_model_has_unknown_residency(self):
+        detail = self.detail()
+        server = ServerInfo("llama-server", "http://local", model_path=str(self.path))
+        with patch("gputaskman.llm.read_gguf", return_value=gguf("qwen3", block_count=1)):
+            view = build_view(detail, GiB, 0, server)
+        self.assertEqual(view.files[0].sources, ["api"])
+        self.assertIsNone(view.files[0].resident)
+
     @unittest.skipIf(os.name == "nt", "POSIX resolves .. after following directory symlinks")
     def test_symlink_parent_traversal_is_not_rewritten_to_another_file(self):
         base, target = self.root / "base", self.root / "target"
@@ -1910,6 +1932,7 @@ class IdentityTests(unittest.TestCase):
             self.assertEqual([(os.path.basename(m.path), m.size) for m in found],
                              [("whisper-large.bin", 70 * MiB), ("parakeet", 13 * MiB)])
             self.assertEqual(found[0].evidence, "installed, not proven loaded")
+            self.assertTrue(all(m.resident is None for m in found))
             self.assertIs(installed_models(str(exe), now=2.0), found)  # cached
             d = ProcDetail(7, "speechy.exe", runtimes=["ONNX RT"], candidates=found)
             self.assertEqual(classify(d, {}), "AI")  # candidates never decide the kind
