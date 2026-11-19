@@ -357,20 +357,26 @@ def lmstudio_models(v1: dict | None, v0: dict | None) -> list[dict] | None:
                     t = f"decision ({decision_type})"
                 config = inst.get("config")
                 config = config if isinstance(config, dict) else {}
-                out.append(_model_entry(_runtime_text(inst.get("id")) or _runtime_text(m.get("key")), t,
-                                        _runtime_text(q.get("name")), _runtime_int(config.get("context_length")),
-                                        _runtime_int(m.get("size_bytes"))))
+                name = _runtime_text(inst.get("id"))
+                if not name or not name.strip():
+                    name = _runtime_text(m.get("key"))
+                if not name or not name.strip():
+                    continue
+                out.append(_model_entry(name, t, _runtime_text(q.get("name")),
+                                        _runtime_int(config.get("context_length")), _runtime_int(m.get("size_bytes"))))
         return out
     if isinstance(v0, dict) and isinstance(v0.get("data"), list):
         out = []
         for m in v0["data"]:
             if not isinstance(m, dict) or m.get("state") != "loaded":
                 continue
+            name = _runtime_text(m.get("id"))
+            if not name or not name.strip():
+                continue
             ctx = _runtime_int(m.get("loaded_context_length"))
             if ctx is None:
                 ctx = _runtime_int(m.get("max_context_length"))
-            out.append(_model_entry(_runtime_text(m.get("id")), _runtime_text(m.get("type")),
-                                    _runtime_text(m.get("quantization")), ctx))
+            out.append(_model_entry(name, _runtime_text(m.get("type")), _runtime_text(m.get("quantization")), ctx))
         return out
     return None
 
@@ -437,10 +443,10 @@ def probe_server(port: int, prev: ServerInfo | None = None, key: str | None = No
             v1 = _get(base + "/v1/models", key=key)
             s.models = llama_server_models(v1, s.model_path) if isinstance(v1, dict) else []
         slots = _get(base + "/slots", key=key)
-        if isinstance(slots, list):
-            slots = [slot for slot in slots if isinstance(slot, dict)]
+        if isinstance(slots, list) and all(
+                isinstance(slot, dict) and isinstance(slot.get("is_processing"), bool) for slot in slots):
             s.slots_total = len(slots)
-            s.slots_busy = sum(1 for slot in slots if slot.get("is_processing") is True)
+            s.slots_busy = sum(1 for slot in slots if slot["is_processing"])
             s.requests_running = s.slots_busy
         metrics = _get(base + "/metrics", key=key)
         if isinstance(metrics, str):
@@ -717,10 +723,12 @@ def build_view(d: ProcDetail, vram: float, shared: float, server: ServerInfo | N
     for front in (s for s in (server, host) if s and s.kind == "ollama"):
         mine = [om for om in front.models if om in matched]
         for om in mine or front.models:  # unmatched: show everything Ollama has loaded
-            if om.get("size"):
-                pct = 100 * (om.get("size_vram") or 0) / om["size"]
+            size = _runtime_int(om.get("size"))
+            if size:
+                size_vram = _runtime_int(om.get("size_vram"))
+                pct = f"{100 * size_vram / size:.0f}%" if size_vram is not None else "n/a"
                 v.notes.append(f"Ollama{'' if mine else ' (not matched to this runner)'}: {om['name']} "
-                               f"{gb(om['size'])} total, {pct:.0f}% on GPU, ctx {om.get('ctx') or '?'}.")
+                               f"{gb(size)} total, {pct} on GPU, ctx {om.get('ctx') or '?'}.")
     if host and host.kind == "lmstudio":
         for m in host.models[:4]:
             v.notes.append(f"LM Studio: {m['name']} {m.get('type') or ''} {m.get('quant') or ''} "

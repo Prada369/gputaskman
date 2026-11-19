@@ -1608,7 +1608,28 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(server.kind, "llama-server")
         self.assertIsNone(server.n_ctx)
         self.assertEqual(server.models, [])
-        self.assertEqual((server.slots_total, server.slots_busy, server.requests_running), (2, 1, 1))
+        self.assertEqual((server.slots_total, server.slots_busy, server.requests_running), (None, None, None))
+
+    def test_llama_server_slots_require_complete_boolean_statuses(self):
+        props = {"model_path": None, "total_slots": 8}
+        cases = (
+            ("null entry", [None], (8, None, None)),
+            ("mixed entries", [{"is_processing": True}, None], (8, None, None)),
+            ("missing status", [{}], (8, None, None)),
+            ("invalid status", [{"is_processing": "false"}], (8, None, None)),
+            ("empty list", [], (0, 0, 0)),
+        )
+        for label, slots, expected in cases:
+            with self.subTest(label=label), patch("gputaskman.llm._get",
+                    side_effect=[props, {"data": []}, slots, None]):
+                server = probe_server(8080)
+            self.assertEqual((server.slots_total, server.slots_busy, server.requests_running), expected)
+
+        metrics = "llamacpp:requests_processing 3\nllamacpp:requests_deferred 2"
+        with patch("gputaskman.llm._get", side_effect=[props, {"data": []}, [None], metrics]):
+            server = probe_server(8080)
+        self.assertEqual((server.slots_total, server.slots_busy, server.requests_running, server.requests_waiting),
+                         (8, None, 3, 2))
 
     def test_api_key_from_launch_arguments(self):
         self.assertEqual(api_key(["llama-server", "--api-key", "abc"]), "abc")
@@ -1980,6 +2001,29 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(view.files[0].sources, ["cmdline", "api"])
         self.assertEqual(model.sources, ["cmdline"])
 
+    def test_lmstudio_instance_without_an_identifier_does_not_correlate_a_model(self):
+        models = lmstudio_models({"models": [
+            {"key": [], "loaded_instances": [{"id": []}]},
+        ]}, None)
+        self.assertEqual(models, [])
+        self.assertEqual(lmstudio_models(None, {"data": [{"state": "loaded"}]}), [])
+        model = MappedModel("m.gguf", 1000, 0, True, ["mapped"], kind="LLM")
+        detail = ProcDetail(6, "llama-server.exe", models=[model])
+        host = ServerInfo("lmstudio", "http://127.0.0.1:1", models=models)
+        with patch("gputaskman.llm.read_gguf", return_value=gguf("qwen3", block_count=1)):
+            view = build_view(detail, GiB, 0, None, host=host)
+        self.assertEqual(view.files[0].sources, ["mapped"])
+
+    def test_ollama_unknown_vram_usage_is_not_rendered_as_zero(self):
+        for size_vram, expected in ((None, "n/a"), ([], "n/a"), (0, "0%"), (GiB, "100%")):
+            with self.subTest(size_vram=size_vram):
+                models = ollama_models({"models": [{"name": "qwen3:14b", "size": GiB,
+                                                    "size_vram": size_vram}]})
+                host = ServerInfo("ollama", "http://127.0.0.1:1", models=models)
+                view = build_view(ProcDetail(6, "ollama.exe"), GiB, 0, None, host=host)
+                note = next(n for n in view.notes if n.startswith("Ollama"))
+                self.assertIn(f"{expected} on GPU", note)
+
 
 class ChartTests(unittest.TestCase):
     def test_spark_distinguishes_zero_from_missing_and_clamps_values(self):
@@ -2067,6 +2111,21 @@ class UiTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("llama-server (runtime-reported): requests running 0, waiting 0, "
                               "KV-cache pool 0.0%", text)
                 self.assertIn("not of GPU memory", text)
+
+    async def test_inspector_labels_unknown_busy_slots_when_total_is_known(self):
+        snap = snapshot()
+        row = snap.procs[0]
+        server = ServerInfo("llama-server", "http://127.0.0.1:8080", slots_total=4)
+        row.llm = build_view(row.detail, row.gpu.dedicated, row.gpu.shared, server)
+        with patch.object(GpuTaskManager, "poll"):
+            app = GpuTaskManager()
+            app.selected_key = "10"
+            async with app.run_test(size=(180, 50)) as pilot:
+                app.apply(snap)
+                await pilot.pause()
+                text = "\n".join(getattr(line, "plain", "") for line in
+                                 app.query_one("#inspector", Static).content.renderables)
+                self.assertIn("slots busy n/a/4", text)
 
     async def test_monitoring_toggle_hides_diagnostics_without_changing_live_state(self):
         s = snapshot()
