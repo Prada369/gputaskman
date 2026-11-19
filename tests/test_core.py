@@ -1370,14 +1370,22 @@ class ModelTests(unittest.TestCase):
                 "llama_context: CUDA0 compute buffer size = 5 MiB\n",
                 encoding="utf-8",
             )
-            parsed = parse_load_log(str(path))
-            self.assertIsNotNone(parsed)
-            self.assertEqual(parsed.buffers, {
-                "CPU_Mapped": {"weights": 30 * MiB},
-                "CUDA0": {"weights": 100 * MiB, "kv": 30 * MiB, "compute": 5 * MiB},
-            })
-            self.assertIsNone(parsed.timestamp)
-            self.assertEqual(parsed.timestamp_issue, "missing")
+            records = parse_load_log(str(path))
+            self.assertEqual([(r.device, r.kind, r.bytes // MiB) for r in records], [
+                ("CPU_Mapped", "weights", 30), ("CUDA0", "weights", 100), ("CUDA0", "kv", 20),
+                ("CUDA0", "kv", 10), ("CUDA0", "compute", 5),
+            ])
+            self.assertTrue(all(r.timestamp is None and r.timestamp_issue == "missing" for r in records))
+
+    def test_log_tail_does_not_read_old_or_partial_records(self):
+        prefix = b"2026-01-01T10:00:00Z load_tensors: "
+        clipped = b"CUDA0 model buffer size = 900 MiB\n"
+        latest = b"load_tensors: CPU model buffer size = 10 MiB\n"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "server.log"
+            path.write_bytes(prefix + clipped + b"\n" * ((512 << 10) - len(clipped) - len(latest)) + latest)
+            records = parse_load_log(str(path))
+        self.assertEqual([(r.device, r.bytes, r.timestamp) for r in records], [("CPU", 10 * MiB, None)])
 
 
 def gguf(arch: str, **meta) -> GgufInfo:
@@ -1880,17 +1888,28 @@ class IdentityTests(unittest.TestCase):
             path = Path(directory) / "server.log"
             path.write_text(
                 "2026-01-01T10:00:00Z load_tensors: CUDA0 model buffer size = 900 MiB\n"
-                "2026-01-01T10:00:01Z llama_context: CUDA0 KV buffer size = 800 MiB\n"
-                "2026-01-02T10:00:00Z unrelated startup event\n",
+                "2026-02-01T10:00:00Z unrelated startup event\n"
+                "2026-02-01T10:00:01Z llama_context: CUDA0 compute buffer size = 900 MiB\n"
+                "llama_context: CUDA0 KV buffer size = 800 MiB\n",
                 encoding="utf-8",
             )
             detail = ProcDetail(5, "llama-server.exe",
                                 create_time=datetime(2026, 1, 2, 9, tzinfo=timezone.utc).timestamp())
             view = build_view(detail, 20 * MiB, 0, None, str(path))
-        self.assertEqual(view.log.timestamp, "2026-01-01T10:00:00Z")
-        self.assertEqual(view.log.buffers["CUDA0"]["weights"], 900 * MiB)
         self.assertFalse(any(s.exact or "CUDA0" in s.label for s in view.segments))
-        self.assertTrue(any("predates this process" in note for note in view.notes))
+        s = snapshot()
+        s.procs[0] = ProcRow(detail.pid, detail.name, classify(detail, {}), ProcGpu(dedicated=20 * MiB), detail, view)
+        history = to_dict(s)["processes"][0]["llm"]["log_history"]
+        self.assertEqual([(r["kind"], r["bytes"], r["timestamp"]) for r in history], [
+            ("weights", 900 * MiB, "2026-01-01T10:00:00Z"),
+            ("compute", 900 * MiB, "2026-02-01T10:00:01Z"),
+            ("kv", 800 * MiB, None),
+        ])
+        text = to_text(s)
+        self.assertIn("Load-log history (runtime-reported; not current residency or allocation)", text)
+        self.assertIn("CUDA0 weights: 900 MiB at 2026-01-01T10:00:00Z (predates this process)", text)
+        self.assertIn("CUDA0 compute: 900 MiB at 2026-02-01T10:00:01Z", text)
+        self.assertIn("CUDA0 kv: 800 MiB at timestamp unavailable", text)
 
     def test_newer_load_log_is_preserved_as_history_not_current_allocation(self):
         laya = gguf("modern-bert", **LAYA)
@@ -1907,19 +1926,13 @@ class IdentityTests(unittest.TestCase):
             )
             with patch("gputaskman.llm.read_gguf", return_value=laya):
                 view = build_view(detail, 20 * MiB, 0, None, str(path))
-        self.assertEqual(view.log.timestamp, "2026-01-02T10:00:00Z")
-        self.assertEqual(view.log.buffers["Vulkan0"]["weights"], 10 * MiB)
         self.assertFalse(any(s.exact for s in view.segments))
         self.assertFalse(any("Vulkan0" in s.label for s in view.segments))
-        self.assertTrue(any("does not prove current residency" in note for note in view.notes))
         s = snapshot()
         s.procs[0] = ProcRow(detail.pid, detail.name, classify(detail, {}), ProcGpu(dedicated=20 * MiB), detail, view)
-        event = to_dict(s)["processes"][0]["llm"]["log_event"]
-        self.assertEqual(event["timestamp"], "2026-01-02T10:00:00Z")
-        self.assertIsNone(event["timestamp_issue"])
-        self.assertEqual(event["buffers"]["Vulkan0"]["weights"], 10 * MiB)
-        self.assertIn("load-log history", to_text(s))
-        self.assertIn("2026-01-02T10:00:00Z", to_text(s))
+        event = to_dict(s)["processes"][0]["llm"]["log_history"][0]
+        self.assertEqual(event, {"device": "Vulkan0", "kind": "weights", "bytes": 10 * MiB,
+                                 "timestamp": "2026-01-02T10:00:00Z", "timestamp_issue": None})
 
     def test_untimestamped_load_log_is_not_attributed_to_current_process(self):
         detail = ProcDetail(5, "llama-server.exe",
@@ -1928,9 +1941,9 @@ class IdentityTests(unittest.TestCase):
             path = Path(directory) / "server.log"
             path.write_text("load_tensors: CUDA0 model buffer size = 10 MiB\n", encoding="utf-8")
             view = build_view(detail, 20 * MiB, 0, None, str(path))
-        self.assertEqual(view.log.buffers["CUDA0"]["weights"], 10 * MiB)
+        self.assertEqual(view.log[0].bytes, 10 * MiB)
+        self.assertIsNone(view.log[0].timestamp)
         self.assertFalse(any(s.exact or "CUDA0" in s.label for s in view.segments))
-        self.assertTrue(any("no usable timestamp" in note for note in view.notes))
 
     def test_timezone_free_load_log_timestamp_is_not_compared_to_process_start(self):
         detail = ProcDetail(5, "llama-server.exe",
@@ -1940,11 +1953,15 @@ class IdentityTests(unittest.TestCase):
             path.write_text("2026-01-02T10:00:00 load_tensors: CUDA0 model buffer size = 10 MiB\n",
                             encoding="utf-8")
             view = build_view(detail, 20 * MiB, 0, None, str(path))
-        self.assertEqual(view.log.timestamp, "2026-01-02T10:00:00")
-        self.assertIsNone(view.log.timestamp_epoch)
-        self.assertEqual(view.log.timestamp_issue, "timezone-unknown")
-        self.assertFalse(any("predates this process" in note for note in view.notes))
-        self.assertTrue(any("has no timezone" in note for note in view.notes))
+        record = view.log[0]
+        self.assertEqual(record.timestamp, "2026-01-02T10:00:00")
+        self.assertIsNone(record.timestamp_epoch)
+        self.assertEqual(record.timestamp_issue, "timezone-unknown")
+        s = snapshot()
+        s.procs[0] = ProcRow(detail.pid, detail.name, classify(detail, {}), ProcGpu(dedicated=20 * MiB), detail, view)
+        text = to_text(s)
+        self.assertNotIn("predates this process", text)
+        self.assertIn("2026-01-02T10:00:00 (has no timezone)", text)
 
     def test_unrepresentable_log_timestamps_remain_history(self):
         detail = ProcDetail(5, "llama-server.exe",
@@ -1956,11 +1973,10 @@ class IdentityTests(unittest.TestCase):
                                 encoding="utf-8")
                 with patch("gputaskman.llm._datetime_epoch", side_effect=OSError("unsupported timestamp")):
                     view = build_view(detail, 20 * MiB, 0, None, str(path))
-            self.assertEqual(view.log.timestamp, f"{timestamp}Z")
-            self.assertIsNone(view.log.timestamp_epoch)
-            self.assertEqual(view.log.timestamp_issue, "unrepresentable")
-            self.assertFalse(any("predates this process" in note for note in view.notes))
-            self.assertTrue(any("cannot be converted on this platform" in note for note in view.notes))
+                record = view.log[0]
+                self.assertEqual(record.timestamp, f"{timestamp}Z")
+                self.assertIsNone(record.timestamp_epoch)
+                self.assertEqual(record.timestamp_issue, "unrepresentable")
 
     def test_installed_models_are_candidates_only(self):
         with tempfile.TemporaryDirectory() as root:
@@ -2097,6 +2113,32 @@ class UiTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("llama-server (runtime-reported): requests running 0, waiting 0, "
                               "KV-cache pool 0.0%", text)
                 self.assertIn("not of GPU memory", text)
+
+    async def test_inspector_displays_buffer_values_only_in_log_history(self):
+        snap = snapshot()
+        row = snap.procs[0]
+        row.detail.create_time = datetime(2026, 2, 1, tzinfo=timezone.utc).timestamp()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "server.log"
+            path.write_text(
+                'time=2026-01-01T10:00:00Z level=INFO msg="model weights" device=CUDA0 size="900 MiB"\n'
+                'time=2026-02-01T10:00:00Z level=INFO msg="server started"\n'
+                'msg="compute graph" device=CUDA0 size="20 MiB"\n',
+                encoding="utf-8",
+            )
+            row.llm = build_view(row.detail, row.gpu.dedicated, row.gpu.shared, None, str(path))
+        with patch.object(GpuTaskManager, "poll"):
+            app = GpuTaskManager()
+            app.selected_key = "10"
+            async with app.run_test(size=(180, 50)) as pilot:
+                app.apply(snap)
+                await pilot.pause()
+                text = "\n".join(getattr(line, "plain", "") for line in
+                                 app.query_one("#inspector", Static).content.renderables)
+                before, after = text.split("Load-log history (runtime-reported; not current residency or allocation)")
+                self.assertNotIn("CUDA0", before)
+                self.assertIn("CUDA0 weights: 900 MiB at 2026-01-01T10:00:00Z (predates this process)", after)
+                self.assertIn("CUDA0 compute: 20 MiB at timestamp unavailable", after)
 
     async def test_monitoring_toggle_hides_diagnostics_without_changing_live_state(self):
         s = snapshot()

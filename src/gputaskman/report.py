@@ -7,7 +7,7 @@ import json
 import os
 
 from .collector import ProcRow, Snapshot
-from .llm import gb, server_gauge_text
+from .llm import LOG_HISTORY_LABEL, gb, log_buffer_text, server_gauge_text
 from .nvml import format_metric
 from .pdh import ProcGpu
 from .tcc import TccAdapter
@@ -162,10 +162,9 @@ def to_dict(s: Snapshot) -> dict:
                 "server": dataclasses.asdict(p.llm.server) if p.llm.server else None,
                 "server_source": p.llm.server_source,
                 "log_source": p.llm.log_source,
-                "log_event": ({"timestamp": p.llm.log.timestamp,
-                               "timestamp_issue": p.llm.log.timestamp_issue,
-                               "buffers": p.llm.log.buffers}
-                              if p.llm.log else None),
+                "log_history": [{"device": record.device, "kind": record.kind, "bytes": record.bytes,
+                                 "timestamp": record.timestamp, "timestamp_issue": record.timestamp_issue}
+                                for record in p.llm.log],
                 "notes": p.llm.notes,
             }
         procs.append(item)
@@ -302,9 +301,9 @@ def to_text(s: Snapshot, limit: int = 30) -> str:
                     out.append(f"   API-reported model ID: {m['name']}")
             if gauges := server_gauge_text(sv):
                 out.append(f"   {gauges}")
-        if p.llm.log_source:
-            when = p.llm.log.timestamp if p.llm.log and p.llm.log.timestamp else "timestamp unavailable"
-            out.append(f"   load-log history: {p.llm.log_source} (event {when}; not current residency)")
+        if p.llm.log:
+            out.append(f"   {LOG_HISTORY_LABEL}: {p.llm.log_source}")
+            out.extend(f"     {log_buffer_text(record, p.detail.create_time)}" for record in p.llm.log)
         for n in p.llm.notes:
             out.append(f"   - {n}")
     return "\n".join(out)

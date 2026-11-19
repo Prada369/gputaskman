@@ -1181,14 +1181,13 @@ the worker's key is never sent there. A 401 is shown as **Parent-process API loc
 Probe caches separate own/parent origins, process creation times, runtime and credentials, so
 an authenticated own-port result cannot silently satisfy a parent request.
 
-Ollama's local `server.log` is considered when one Ollama runner is detected. Only the latest
-load block's own timestamp is used; a fresh file modification or unrelated append cannot make an
-older block current. Untimestamped blocks and blocks predating the process remain available as
-log history but are not used in the current allocation breakdown. Timestamped buffer sizes are
-runtime-reported at load time, not evidence of process identity, current residency, or exact
-current allocation. The JSON `llm.log_event` field retains the parsed timestamp and reported
-buffers separately from the current `segments`, with `timestamp_issue` explaining why a time cannot
-be compared when it is missing, timezone-free, unparseable, or outside the platform's epoch range.
+Ollama's local `server.log` is considered when one Ollama runner is detected. The monitor reads at
+most 512 KiB from the tail and shows recent runtime-reported buffer records in a separate history
+section in text and the inspector. Each record uses only its own timestamp, if present. Records
+are not summed or assumed to describe the same load, and never enter the current allocation
+breakdown. In JSON, `llm.log_history` lists the device, buffer kind, bytes, timestamp, and
+`timestamp_issue` for each record, separately from current `segments`. Missing timestamps are
+`null`; timezone-free or unusable timestamps are not compared to process start.
 Any inferred remainder in the current breakdown is runtime/unknown overhead, not an exact
 measurement of the CUDA context.
 

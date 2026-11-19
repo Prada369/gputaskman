@@ -68,7 +68,8 @@ def parse_flags(cmd: list[str]) -> dict:
 _LLAMA_BUF = re.compile(r"(\S+)\s+(model|KV|compute|output|RS)\s+buffer size\s*=\s*([\d.]+)\s*MiB")
 _OLLAMA_BUF = re.compile(r'msg="(model weights|kv cache|compute graph)"\s+device=(\S+)\s+size="([\d.]+)\s*(GiB|MiB|KiB|B)"')
 _LOG_TIMESTAMP = re.compile(
-    r"(?<!\d)(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)(?!\d)"
+    r'^\s*(?:time="?|\[)?(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?'
+    r'(?:Z|[+-]\d{2}:?\d{2})?)(?=[\s"\]]|$)'
 )
 _UNIT = {"GiB": 1 << 30, "MiB": 1 << 20, "KiB": 1 << 10, "B": 1}
 _KIND = {"model": "weights", "model weights": "weights", "KV": "kv", "kv cache": "kv", "RS": "kv",
@@ -76,8 +77,10 @@ _KIND = {"model": "weights", "model weights": "weights", "KV": "kv", "kv cache":
 
 
 @dataclass
-class LoadLog:
-    buffers: dict[str, dict[str, int]]
+class LoggedBuffer:
+    device: str
+    kind: str
+    bytes: int
     timestamp: str | None
     timestamp_epoch: float | None
     timestamp_issue: str | None
@@ -109,26 +112,30 @@ def is_gpu_device(dev: str) -> bool:
     return not (d.startswith("CPU") or "HOST" in d or d.startswith("MMAP"))
 
 
-def parse_load_log(path: str) -> LoadLog | None:
-    """Return the latest bounded llama.cpp/Ollama load-log event, with its source timestamp."""
+def parse_load_log(path: str) -> list[LoggedBuffer]:
+    """Read recent buffer records, not a proven load block or a set of simultaneous allocations."""
+    limit = 512 << 10
     try:
         with open(path, "rb") as f:
-            f.seek(0, 2)
-            f.seek(max(f.tell() - (512 << 10), 0))
-            lines = f.read().decode("utf-8", "replace").splitlines()
+            offset = max(f.seek(0, 2) - limit, 0)
+            f.seek(offset)
+            tail = f.read(limit)
     except OSError:
-        return None
+        return []
+    if offset:
+        # A clipped line could lose its timestamp or contain only part of a buffer record.
+        tail = tail.partition(b"\n")[2]
+    lines = tail.decode("utf-8", "replace").splitlines()
     start = None
-    for i in range(len(lines) - 1, -1, -1):  # last load starts at its first weights line
+    for i in range(len(lines) - 1, -1, -1):  # Bound displayed history to the most recent weights run onward.
         if "model buffer size" in lines[i] or 'msg="model weights"' in lines[i]:
             start = i
             while start > 0 and ("model buffer size" in lines[start - 1] or 'msg="model weights"' in lines[start - 1]):
                 start -= 1
             break
     if start is None:
-        return None
-    timestamp, timestamp_epoch, timestamp_issue = _log_timestamp(lines[start])
-    out: dict[str, dict[str, int]] = {}
+        return []
+    out = []
     for line in lines[start:]:
         m = _LLAMA_BUF.search(line)
         if m:
@@ -138,9 +145,8 @@ def parse_load_log(path: str) -> LoadLog | None:
             if not m:
                 continue
             dev, kind, n = m[2], _KIND[m[1]], int(float(m[3]) * _UNIT[m[4]])
-        out.setdefault(dev, {}).setdefault(kind, 0)
-        out[dev][kind] += n
-    return LoadLog(out, timestamp, timestamp_epoch, timestamp_issue) if out else None
+        out.append(LoggedBuffer(dev, kind, n, *_log_timestamp(line[:m.start()])))
+    return out
 
 
 def ollama_log_path() -> str:
@@ -520,7 +526,7 @@ class LlmView:
     host: ServerInfo | None = None  # managing front-end (Ollama / LM Studio) when the runner has its own server
     server_source: str | None = None  # process | parent; an API report, not proof of worker residency
     log_source: str | None = None
-    log: LoadLog | None = None
+    log: list[LoggedBuffer] = field(default_factory=list)
     segments: list[Segment] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     kv_per_token: int | None = None
@@ -547,6 +553,26 @@ def gb(n: float) -> str:
     if abs(n) >= 1 << 30:
         return f"{n / (1 << 30):.2f} GB"
     return f"{n / MiB:.0f} MB"
+
+
+LOG_HISTORY_LABEL = "Load-log history (runtime-reported; not current residency or allocation)"
+
+
+def log_buffer_text(record: LoggedBuffer, process_start: float) -> str:
+    when = record.timestamp or "timestamp unavailable"
+    if record.timestamp_issue == "timezone-unknown":
+        when += " (has no timezone)"
+    elif record.timestamp_issue == "unrepresentable":
+        when += " (cannot be converted on this platform)"
+    elif record.timestamp_issue == "unparseable":
+        when += " (unparseable timestamp)"
+    elif record.timestamp_epoch is not None:
+        if process_start <= 0:
+            when += " (process start time unknown)"
+        elif record.timestamp_epoch < process_start - 5:
+            when += " (predates this process)"
+    size = f"{record.bytes / MiB:.2f}".rstrip("0").rstrip(".") + " MiB" if record.bytes >= MiB else f"{record.bytes} B"
+    return f"{record.device} {record.kind}: {size} at {when}"
 
 
 _SIDE_KINDS = ("vision projector", "LoRA adapter")
@@ -622,26 +648,6 @@ def build_view(d: ProcDetail, vram: float, shared: float, server: ServerInfo | N
     if log_path:
         v.log = parse_load_log(log_path)
         v.log_source = log_path if v.log else None
-        if v.log:
-            if v.log.timestamp_epoch is None:
-                if v.log.timestamp_issue == "timezone-unknown":
-                    v.notes.append(f"Runtime buffer log timestamp {v.log.timestamp} has no timezone; retained as "
-                                   "history and not compared with process start.")
-                elif v.log.timestamp_issue == "unrepresentable":
-                    v.notes.append(f"Runtime buffer log timestamp {v.log.timestamp} cannot be converted on this "
-                                   "platform; retained as history and not compared with process start.")
-                else:
-                    v.notes.append("Latest runtime buffer log has no usable timestamp; retained as history, not "
-                                   "attributed to this process or its current allocation.")
-            elif d.create_time <= 0:
-                v.notes.append(f"Runtime buffer log reports load-time sizes at {v.log.timestamp}; process start time "
-                               "is unknown, and the event does not prove process identity or current residency.")
-            elif v.log.timestamp_epoch < d.create_time - 5:
-                v.notes.append(f"Runtime buffer log event at {v.log.timestamp} predates this process; retained as "
-                               "history, not used as its allocation breakdown.")
-            else:
-                v.notes.append(f"Runtime buffer log reports load-time sizes at {v.log.timestamp}; it does not prove "
-                               "current residency or exact allocation.")
 
     main = next((g for g in v.models if g.kind == "LLM" and g.n_layers), None)  # only causal LLMs grow a KV cache
     ctk = str(v.flags.get("ctk", "f16")).lower()
