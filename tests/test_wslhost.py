@@ -300,6 +300,34 @@ class TrackerTests(unittest.TestCase):
         self.check(self.step(t, [2.0, 0.0], [("S", 900), ("P", 2000)]), {"P": (2.0, "*")})
         self.check(self.step(t, [2.0, 0.0], [("S", 900), ("P", 2000)]), {"P": (2.0, "*")})
 
+    def test_immediately_reused_pid_does_not_keep_its_old_context(self):
+        t = self.make()
+        self.check(self.step(t, [0.0, 1.0], [("S", 900), ("P", 10)]), {"P": (1.0, "*")})
+        self.check(self.step(t, [0.0, 1.0], [("S", 900), ("P", 2000)]), {})
+        self.check(self.step(t, [2.0, 0.0, 1.0], [("S", 900), ("P", 2000)]), {"P": (2.0, "*")})
+        for contexts in ([2.0, 0.0, 1.0], [2.0, 0.0], [2.0, 0.0]):
+            self.check(self.step(t, contexts, [("S", 900), ("P", 2000)]), {"P": (2.0, "*")})
+
+    def test_unknown_start_time_does_not_invalidate_context_ownership(self):
+        for unknown in (None, float("nan")):
+            with self.subTest(unknown=unknown):
+                t = self.make()
+                for started in (10, unknown, 10, unknown):
+                    self.check(self.step(t, [0.0, 1.0], [("S", 900), ("P", started)]),
+                               {"P": (1.0, "*")})
+                self.check(self.step(t, [0.0, 1.0], [("S", 900), ("P", 2000)]), {})
+
+    def test_exited_process_start_times_are_pruned(self):
+        t = self.make()
+        self.step(t, [0.0], [("S", 900)])
+        for pid in range(30):
+            self.step(t, [1.0, 0.0], [("S", None), (pid, pid + 10)])
+            self.assertEqual(t.starts, {"S": 900, pid: pid + 10})
+            self.step(t, [0.0], [("S", float("nan"))])
+            self.assertEqual(t.starts, {"S": 900})
+        self.step(t, [], [])
+        self.assertEqual(t.starts, {})
+
     def test_already_running_processes_are_guesses_until_evidence(self):
         t = self.make()
         h = [("S", 900), ("C", 14), ("B", 13)]

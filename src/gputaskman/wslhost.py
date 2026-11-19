@@ -359,6 +359,7 @@ class ContextTracker:
     def _reset(self) -> None:
         self.entries: list[_Entry] | None = None
         self.seen: dict[object, float] = {}  # holder pid -> first seen
+        self.starts: dict[object, float] = {}  # holder pid -> latest known process start time
         self.initial: set = set()  # holders already running at the first sample
         self.gone: dict[object, float] = {}
 
@@ -422,33 +423,46 @@ class ContextTracker:
             self.luid, self.cached_foreign = luid, []
             self._reset()
         start = dict(holders)
+        replaced = set()
+        for pid, started in start.items():
+            if isinstance(started, (int, float)) and math.isfinite(started):
+                if pid in self.seen and pid in self.starts and self.starts[pid] != started:
+                    replaced.add(pid)
+                self.starts[pid] = started
         first = self.entries is None
         had_foreign = any(e.label == FOREIGN and e.sure for e in self.entries or [])
         cur = [_Entry(v) for v in contexts]
         fresh: list[_Entry] = []  # contexts that appeared since the previous sample
         if not first:
-            sure = {e.label for e in self.entries if e.sure}
+            sure = {e.label for e in self.entries if e.sure and e.label not in replaced}
             waiting = [p for p in start if p not in self.initial and p not in sure]  # new or lagging processes
-            exited = [p for p in self.seen if p not in start]
+            exited = [p for p in self.seen if p not in start or p in replaced]
             lingering = sum(1 for e in self.entries if isinstance(e.label, tuple))
             for e, old in zip(cur, self._align(self.entries, contexts, len(waiting), len(exited) + lingering)):
                 if old is None:
                     fresh.append(e)
                 else:
                     e.label, e.sure = old.label, old.sure
+                    if e.label in replaced:
+                        e.label, e.sure = ("gone", e.label), False
 
         for pid in start:
-            if pid not in self.seen:
+            if pid in replaced:
+                self.seen[pid] = now
+                self.initial.discard(pid)
+                self.gone[pid] = now
+            elif pid not in self.seen:
                 self.seen[pid] = now
                 self.gone.pop(pid, None)  # reused PID: not the process that exited
                 if first:
                     self.initial.add(pid)
         for pid in [p for p in self.seen if p not in start]:
             del self.seen[pid]
+            self.starts.pop(pid, None)
             self.initial.discard(pid)  # a reused PID is a new process, not one that was running at startup
             self.gone[pid] = now
         for e in cur:
-            if e.label in self.gone and not isinstance(e.label, tuple):
+            if e.label in self.gone and e.label not in start and not isinstance(e.label, tuple):
                 e.label, e.sure = ("gone", e.label), False
             if isinstance(e.label, tuple) and now - self.gone.get(e.label[1], 0) > self.GONE:
                 e.label = None
