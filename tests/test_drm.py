@@ -762,8 +762,8 @@ class DrmEdgeCaseTests(unittest.TestCase):
         ):
             with self.subTest(text=text), tempfile.TemporaryDirectory() as tmp:
                 card, _, counters = self._counters(Path(tmp), [(100, 5, text), (200, 9, text)])
-                procs, adapters = counters.sample()
-                rows = procs[card.key]
+                proc_map, adapter_map = counters.sample()
+                rows = proc_map[card.key]
                 self.assertEqual(set(rows), {100, 200})
                 for pid in (100, 200):
                     g = rows[pid]
@@ -772,8 +772,24 @@ class DrmEdgeCaseTests(unittest.TestCase):
                     self.assertEqual(g.dedicated, 0)
                     self.assertNotIn("dedicated", g.available)
                     self.assertEqual(g.resident_vram, 256 * 1024 * 1024)
-                self.assertEqual(sum(g.dedicated for g in rows.values()), 0)
-                self.assertEqual(adapters[card.key].dedicated, GiB)
+
+                from gputaskman.collector import ProcRow, Snapshot
+                from gputaskman.procinfo import ProcDetail
+                from gputaskman.report import to_dict
+
+                adapter = adapter_map[card.key]
+                snapshot = Snapshot(
+                    taken=1, adapter=None, adapters=[], nv=None, driver="", cuda="",
+                    vram_total=card.vram_total, vram_used=adapter.dedicated, shared_used=adapter.shared,
+                    backend="drm",
+                    procs=[ProcRow(pid, "renderer", "renderer", g, ProcDetail(pid, "renderer"))
+                           for pid, g in rows.items()],
+                )
+                self.assertIsNone(snapshot.attributed)
+                report = to_dict(snapshot)
+                self.assertIsNone(report["attributed"])
+                self.assertEqual(report["vram_used"], GiB)
+                self.assertEqual([p["vram_bytes"] for p in report["processes"]], [None, None])
 
     def test_duplicate_unidentified_descriptors_are_not_summed(self):
         text = _fdinfo(7, "PDEV", vram=256 * 1024, gtt=64)
