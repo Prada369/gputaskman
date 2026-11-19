@@ -3,10 +3,10 @@ from __future__ import annotations
 import os
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from gputaskman import linux
-from gputaskman.collector import ProcRow, Snapshot, select_nv_device
+from gputaskman.collector import Collector, ProcRow, Snapshot, select_nv_device
 from gputaskman.dxgi import Adapter
 from gputaskman.nvml import NvDevice
 from gputaskman.gguf import GgufInfo
@@ -231,7 +231,7 @@ class LinuxCountersTests(unittest.TestCase):
             procs, _ = c.sample()
         self.assertEqual((procs[KEY][6000].dedicated, procs[KEY][6000].inferred_by), (20 * GiB, ""))
         self.assertNotIn(100, procs[KEY])
-        self.assertEqual(c.outside, {})
+        self.assertEqual(c.host_procs, {})
 
 
 class ContainerTests(unittest.TestCase):
@@ -246,6 +246,31 @@ class ContainerTests(unittest.TestCase):
 
     child = True
 
+    def snapshot(self, fake, detail=None):
+        with patch.object(linux, "N", fake), patch.object(linux, "is_wsl", return_value=False):
+            counters = linux.LinuxCounters()
+        c = Collector.__new__(Collector)
+        c.adapter, c.adapters = Adapter(KEY, "NVIDIA", 0x10DE, 24 * GiB, 0, False), []
+        c.counters = counters
+        c.nvml = SimpleNamespace(ok=False)
+        c.drm_card = c.ascend_chip = c.ascend = None
+        c.gpu_index, c.scan_budget = 0, None
+        c.host, c.host_status, c._mac_driver = None, "", ""
+        c.inspector = Mock()
+        c.inspector.get.return_value = detail or ProcDetail(547, "python3")
+        c.inspector.needs_scan.return_value = False
+        c.inspector.exclusive_ports.return_value = []
+        c.prober = Mock()
+        c.prober.get.return_value = c.prober.locked_port.return_value = None
+        c._parent_ports = Mock(return_value=[])
+        with patch.object(linux, "N", fake), patch.object(linux, "nvidia_holders", return_value={547}), \
+                patch.object(linux, "has_cuda", return_value=True), \
+                patch.object(linux, "in_child_pid_namespace", return_value=self.child), \
+                patch("gputaskman.collector.BACKEND", "nvml"):
+            snap = c.sample()
+        c.inspector.get.assert_called_once_with(547)  # never inspect a host PID locally
+        return snap
+
     def test_host_pids_are_matched_to_container_pids_by_creation_order(self):
         fake = FakeNvml(compute=[proc(2029701, GiB), proc(2029747, 2 * GiB)],
                         graphics=[proc(1145, 58 << 20), proc(1360, 21 << 20)],
@@ -254,10 +279,11 @@ class ContainerTests(unittest.TestCase):
             c = linux.LinuxCounters()
         # 564 is an NVML-only tool (nvidia-smi, this monitor): it holds the devices but has no CUDA context
         per = self.sample(c, fake, holders={547, 563, 564}, cuda={547, 563})
-        self.assertEqual({pid: (g.dedicated, g.inferred_by) for pid, g in per.items()},
+        self.assertEqual({pid: (g.inferred, g.inferred_by) for pid, g in per.items()},
                          {547: (GiB, "order"), 563: (2 * GiB, "order")})
-        self.assertEqual(per[563].engines["compute"], 95)  # utilization follows the match
-        self.assertEqual(set(c.outside[KEY]), {1145, 1360})  # never looked up in the container's /proc
+        self.assertEqual(per[563].engines, {})  # no measured local engine owner
+        self.assertEqual(c.host_procs[KEY][2029747].engines["compute"], 95)
+        self.assertEqual(set(c.host_procs[KEY]), {1145, 1360, 2029701, 2029747})
 
     def test_equal_counts_do_not_prove_context_ownership(self):
         # A local libcuda user can hold a device without a context; the sole NVML PID may be another container.
@@ -265,8 +291,8 @@ class ContainerTests(unittest.TestCase):
         with patch.object(linux, "N", fake), patch.object(linux, "is_wsl", return_value=False):
             c = linux.LinuxCounters()
         per = self.sample(c, fake, holders={547}, cuda={547})
-        self.assertEqual((per[547].dedicated, per[547].inferred_by), (3 * GiB, "order"))
-        self.assertEqual(c.outside, {})
+        self.assertEqual((per[547].inferred, per[547].inferred_by), (3 * GiB, "order"))
+        self.assertEqual(set(c.host_procs[KEY]), {9000})
         row = ProcRow(547, "python3", "AI", per[547], ProcDetail(547, "python3"))
         snap = Snapshot(taken=1, adapter=None, adapters=[], nv=None, driver="", cuda="", vram_total=8 * GiB,
                         vram_used=3 * GiB, shared_used=None, backend="nvml", procs=[row])
@@ -280,16 +306,94 @@ class ContainerTests(unittest.TestCase):
         self.assertEqual(matcher.update([9000, 9001], [547, 600]),
                          ({9000: (547, "order"), 9001: (600, "order")}, []))
 
+    def test_foreign_context_stays_measured_only_under_its_host_pid(self):
+        from gputaskman.summary import summarize
+
+        fake = FakeNvml(compute=[proc(9000, 3 * GiB)], samples=[sample(9000, 75)])
+        snap = self.snapshot(fake)
+        data = to_dict(snap)
+        local, host = data["processes"]
+        self.assertEqual((local["pid"], local["vram_attributed"], local["vram_bytes"]), (547, False, None))
+        self.assertEqual((local["vram_inferred_bytes"], local["vram_inferred_by"]), (3 * GiB, "order"))
+        self.assertIsNone(local["gpu_pct"])
+        self.assertIsNone(local["engines"])
+        self.assertIn("local owner is unresolved", local["engine_unavailable_reason"])
+        self.assertEqual((host["pid"], host["host"], host["vram_bytes"], host["gpu_pct"]),
+                         (9000, "nvml", 3 * GiB, 75))
+        self.assertEqual(data["attributed"], 3 * GiB)  # not counted again for the local guess
+        self.assertEqual(snap.procs[1].pid_label, "H:9000")
+        text = to_text(snap)
+        self.assertIn("3.00 GB?", text)
+        self.assertIn("local owner is unresolved", text)
+        self.assertNotIn("outside this container", text)
+        peaks = {p["host"]: p for p in summarize([data])["runs"][0]["processes"]}
+        self.assertIsNone(peaks[None]["peak_vram_bytes"])
+        self.assertIsNone(peaks[None]["peak_gpu_pct"])
+        self.assertEqual(peaks["nvml"]["peak_vram_bytes"], 3 * GiB)
+
+    def test_unproven_bytes_do_not_constrain_model_breakdown(self):
+        d = ProcDetail(547, "llama-server", models=[MappedModel("/m/x.gguf", GiB, 0, True)])
+        with patch("gputaskman.collector.build_view") as build:
+            snap = self.snapshot(FakeNvml(compute=[proc(9000, 3 * GiB)]), detail=d)
+        self.assertIsNone(snap.procs[0].llm)
+        build.assert_not_called()  # a guessed counter is not a model residency budget
+        # An independently detected API daemon may still report loaded IDs, without a guessed budget.
+        for memory in (3 * GiB, None):
+            with self.subTest(memory=memory), \
+                    patch("gputaskman.collector.build_view", return_value=LlmView()) as build:
+                snap = self.snapshot(FakeNvml(compute=[proc(9000, memory)]),
+                                     detail=ProcDetail(547, "foundrylocald"))
+                self.assertIsNotNone(snap.procs[0].llm)
+                build.assert_called_once()
+                self.assertFalse(build.call_args.kwargs["attributed"])
+
+    def test_host_memory_availability_is_independent_of_host_engines(self):
+        for memory, expected in ((None, None), (NOT_AVAILABLE, None), (0, 0)):
+            with self.subTest(memory=memory):
+                snap = self.snapshot(FakeNvml(compute=[proc(9000, memory)], samples=[sample(9000, 47)]))
+                data = to_dict(snap)
+                local, host = data["processes"]
+                self.assertEqual(data["attributed"], expected)
+                self.assertIsNone(local["vram_bytes"])
+                self.assertEqual(local["vram_inferred_bytes"], expected)
+                self.assertIsNone(local["gpu_pct"])
+                self.assertEqual(host["vram_bytes"], expected)
+                self.assertEqual(host["gpu_pct"], 47)
+                self.assertIn("local owner is unresolved", to_text(snap))
+
+    def test_known_local_memory_is_independent_of_engine_availability(self):
+        self.child = False
+        for memory in (None, NOT_AVAILABLE, 0, 3 * GiB):
+            with self.subTest(memory=memory):
+                snap = self.snapshot(FakeNvml(compute=[proc(547, memory)], samples=[sample(547, 47)]))
+                data = to_dict(snap)
+                row, = data["processes"]
+                expected = None if memory in (None, NOT_AVAILABLE) else memory
+                self.assertEqual(data["attributed"], expected)
+                self.assertEqual(row["vram_bytes"], expected)
+                self.assertIsNone(row["vram_inferred_bytes"])
+                self.assertEqual(row["gpu_pct"], 47)
+                self.assertIsNone(row["engine_unavailable_reason"])
+                self.assertIsNone(row["host"])
+
+    def test_unknown_namespace_does_not_make_an_equal_pid_a_measured_local_owner(self):
+        self.child = None
+        data = to_dict(self.snapshot(FakeNvml(compute=[proc(547, 3 * GiB)], samples=[sample(547, 47)])))
+        local, host = data["processes"]
+        self.assertEqual((local["pid"], local["vram_bytes"], local["gpu_pct"]), (547, None, None))
+        self.assertEqual((host["pid"], host["host"], host["vram_bytes"]), (547, "nvml", 3 * GiB))
+        self.assertEqual(data["attributed"], 3 * GiB)
+
     def test_extra_outside_compute_stays_a_guess_after_a_start_event(self):
         fake = FakeNvml(compute=[proc(9000, GiB), proc(2029701, 3 * GiB)])  # 9000: another container
         with patch.object(linux, "N", fake), patch.object(linux, "is_wsl", return_value=False):
             c = linux.LinuxCounters()
         per = self.sample(c, fake, holders={547}, cuda={547})
-        self.assertEqual((per[547].dedicated, per[547].inferred_by), (3 * GiB, "order"))
-        self.assertEqual(set(c.outside[KEY]), {9000})
+        self.assertEqual((per[547].inferred, per[547].inferred_by), (3 * GiB, "order"))
+        self.assertEqual(set(c.host_procs[KEY]), {9000, 2029701})
         fake.compute.append(proc(2029800, 2 * GiB))  # a new local job starts: one new PID on each side
         per = self.sample(c, fake, holders={547, 600}, cuda={547, 600})
-        self.assertEqual((per[600].dedicated, per[600].inferred_by), (2 * GiB, "order"))
+        self.assertEqual((per[600].inferred, per[600].inferred_by), (2 * GiB, "order"))
 
     def test_bare_metal_is_unchanged(self):
         fake = FakeNvml(compute=[proc(547, GiB)])
@@ -298,7 +402,7 @@ class ContainerTests(unittest.TestCase):
         self.child = False
         per = self.sample(c, fake, holders={547}, cuda={547})
         self.assertEqual((per[547].dedicated, per[547].inferred_by), (GiB, ""))
-        self.assertEqual(c.outside, {})
+        self.assertEqual(c.host_procs, {})
 
     def test_a_host_pid_equal_to_a_local_pid_is_still_a_host_pid(self):
         # Host PIDs 100 and 200 are container PIDs 10 and 100: local PID 100 is not host PID 100.
@@ -306,7 +410,7 @@ class ContainerTests(unittest.TestCase):
         with patch.object(linux, "N", fake), patch.object(linux, "is_wsl", return_value=False):
             c = linux.LinuxCounters()
         per = self.sample(c, fake, holders={10, 100}, cuda={10, 100})
-        self.assertEqual({pid: (g.dedicated, g.inferred_by) for pid, g in per.items()},
+        self.assertEqual({pid: (g.inferred, g.inferred_by) for pid, g in per.items()},
                          {10: (GiB, "order"), 100: (4 * GiB, "order")})
 
     def test_namespace_detection(self):

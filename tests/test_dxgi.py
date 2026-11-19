@@ -243,7 +243,7 @@ class AdapterIdentityTests(unittest.TestCase):
         c.adapters = [c.adapter]
         c.gpu_index, c.scan_budget, c.host, c.host_status = 0, None, None, ""
         c.nvml = Mock(ok=False)
-        c.counters = Mock(outside={})
+        c.counters = Mock(host_procs={})
         c.counters.sample.return_value = (
             {0x1295f: {4: ProcGpu(dedicated=1024, engines={"compute": 10})}},
             {0x1295f: AdapterGpu(dedicated=1024, shared=0)})

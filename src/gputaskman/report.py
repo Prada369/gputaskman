@@ -62,7 +62,8 @@ ORDER_NOTE = ("? order guess: the size is exact but several owners fit, so newer
               "GPU contexts / PIDs and outside ones are assumed oldest. Cached foreign-size hints only rank extra "
               "candidates; they never prove ownership. WSL may promote to * when its context tracker uniquely "
               "identifies an owner or every viable context gives the same bytes. Container process/NVML start "
-              "correlation only keeps a pair stable; it does not prove ownership.")
+              "correlation only keeps a pair stable; it does not prove ownership. Container guesses are not added "
+              "to measured totals; measured VRAM and engines remain on H: host-PID rows with unresolved local ownership.")
 
 
 DRM_NOTES = {
@@ -248,6 +249,8 @@ def to_text(s: Snapshot, limit: int = 30) -> str:
         out.append(INFERRED_NOTE)
     if any(p.gpu.inferred_by == "order" for p in shown):
         out.append(ORDER_NOTE)
+    if s.backend == "nvml":
+        out.extend(dict.fromkeys(p.gpu.engine_reason for p in shown if p.gpu.engine_reason))
     if s.backend == "drm":
         for note in dict.fromkeys(drm_note(p.gpu) for p in shown if not p.host):
             if note:

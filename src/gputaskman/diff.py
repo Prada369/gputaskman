@@ -49,11 +49,11 @@ def _unattributed(s: dict):
     return used - attributed if used is not None and attributed is not None else None
 
 
-PLACEHOLDER_NAMES = ("?", "(outside this container)")  # no identity: never pair these by name
+PLACEHOLDER_NAMES = ("?", "(outside this container)", "(unresolved host PID)")  # never pair these by name
 
 
 def _named(p: dict) -> bool:
-    return p.get("host") != "outside" and p.get("name") not in PLACEHOLDER_NAMES
+    return p.get("host") not in ("outside", "nvml") and p.get("name") not in PLACEHOLDER_NAMES
 
 
 def _started(p: dict) -> float | None:

@@ -466,7 +466,7 @@ class HostRowTests(unittest.TestCase):
         c.adapters, c.gpu_index, c.scan_budget = [c.adapter], 0, None
         c.host_status = ""
         c.nvml = Mock(ok=False, driver="", cuda_version="")
-        c.counters = Mock(outside={})
+        c.counters = Mock(host_procs={})
         c.counters.sample.return_value = (
             {RTX: {pid: ProcGpu(attributed=False) for pid in range(1, big_pid + 1)}},
             {RTX: AdapterGpu(dedicated=total)})

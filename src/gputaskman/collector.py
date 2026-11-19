@@ -59,7 +59,7 @@ class ProcRow:
     llm: LlmView | None = None
     handy: HandyEvidence | None = None
     host: bool = False  # pid is from another PID namespace, never a local one (see origin)
-    origin: str = ""  # with host: "windows" (a Windows process seen from WSL) | "outside" (outside this container)
+    origin: str = ""  # with host: "windows" | "outside" (legacy) | "nvml" (host PID, local owner unresolved)
     gpu_index: int | None = None
     ram: int | None = None  # system RAM (working set) from host.py; None = unknown, not zero
     cpu: float | None = None  # % of the whole machine from host.py; None until the second sample
@@ -150,9 +150,10 @@ class Snapshot:
     @property
     def attributed(self) -> int | None:
         if not self.process_memory_available or self.counter_adapter_matched is False or any(
-                "dedicated" not in p.gpu.available for p in self.procs):
+                ("dedicated" not in p.gpu.available or (self.backend == "nvml" and not p.gpu.attributed))
+                for p in self.procs if not p.gpu.inferred_by):
             return None
-        total = int(sum(p.gpu.dedicated for p in self.procs))
+        total = int(sum(p.gpu.dedicated for p in self.procs if p.gpu.attributed))
         if self.backend == "wsl" and self.host_data and self.vram_total and total > self.vram_total:
             return None  # overlapping host counters cannot establish uniquely attributed bytes
         return total
@@ -466,13 +467,12 @@ class Collector:
             row = ProcRow(pid=pid, name=d.name, kind=classify(d, g.engines), gpu=g, detail=d)
             snap.procs.append(row)
 
-        for pid, g in getattr(self.counters, "outside", {}).get(luid, {}).items():
-            # A container sees the host's PIDs from NVML; unmatched ones are other containers or the host.
-            snap.procs.append(ProcRow(pid, "(outside this container)", "external", g,
-                                      ProcDetail(pid, "(outside this container)"), host=True, origin="outside"))
+        for pid, g in getattr(self.counters, "host_procs", {}).get(luid, {}).items():
+            snap.procs.append(ProcRow(pid, "(unresolved host PID)", "external", g,
+                                      ProcDetail(pid, "(unresolved host PID)"), host=True, origin="nvml"))
         if self.host is not None:  # current inferred sizes drive both scan priority and the LLM breakdown
             self._add_host_rows(snap)
-        if any(row.gpu.engine_reason for row in snap.procs):
+        if snap.backend == "wddm" and any(row.gpu.engine_reason for row in snap.procs):
             snap.counter_status = " ".join(filter(None, (
                 snap.counter_status,
                 "Windows GPU engine utilization counters outside 0-1000% are unavailable for affected processes "
@@ -535,7 +535,8 @@ class Collector:
             held = (row.gpu.shown_vram or 0) + (0 if snap.shared_is_spill else (row.gpu.shared or 0))
             row.llm = build_view(row.detail, held, row.gpu.shared if snap.shared_is_spill else 0,
                                  own or host, log, host=host if own else None,
-                                 attributed=row.gpu.shown_vram is not None,
+                                 attributed=(row.gpu.shown_vram is not None
+                                             and not (snap.backend == "nvml" and row.gpu.inferred_by)),
                                  server_source="process" if own else "parent" if host else None)
             locked = None if own else self.prober.locked_port(ports, key, kind=kind, origin=own_origin)
             if locked:

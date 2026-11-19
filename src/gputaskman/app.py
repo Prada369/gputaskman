@@ -269,7 +269,7 @@ class GpuTaskManager(App):
 
     @property
     def selected_pid(self) -> int | None:
-        """PID of the selected local process; None for Windows (W:) and outside (H:) rows."""
+        """PID of the selected local process; None for Windows (W:) and host-PID (H:) rows."""
         key = self.selected_key
         pid = key.rsplit(":", 1)[-1] if key else ""
         return int(pid) if pid.isdigit() else None
@@ -372,7 +372,7 @@ class GpuTaskManager(App):
         self.hist_cpu.append(host.cpu_pct if host else None)
         self.hist_ram.append(100 * host.ram_used / host.ram_total if host and host.ram_total else None)
         for snap in snapshots:
-            for row in snap.procs:  # Windows (W:) / outside (H:) rows have no local pid: RAM/CPU stay unknown
+            for row in snap.procs:  # Windows (W:) / host-PID (H:) rows have no local pid: RAM/CPU stay unknown
                 hp = host.proc(row.pid, row.detail.create_time) if host and not row.host else None
                 row.ram, row.cpu = (hp.rss, hp.cpu_pct) if hp else (None, None)
         multi = len(snapshots) > 1
@@ -788,7 +788,7 @@ class GpuTaskManager(App):
         if r is None:
             panel.update(Text("Select a process (↑/↓) to see what's inside its GPU memory.  Press ? to learn what's knowable.", style="grey62"))
             return
-        where = {"windows": "Windows PID ", "outside": "host PID "}.get(r.origin, "") if r.host else ""
+        where = {"windows": "Windows PID ", "outside": "host PID ", "nvml": "host PID "}.get(r.origin, "") if r.host else ""
         panel.border_title = f"{r.name} ({where}{r.pid}) - {r.kind}"
         if r.gpu_index is not None:
             panel.border_title += " - GPU unknown" if s.backend == "wsl" and not r.host else f" - GPU {r.gpu_index}"
@@ -810,6 +810,8 @@ class GpuTaskManager(App):
             hdr.append("   runtime ", style="grey62")
             hdr.append(" ".join(r.detail.runtimes), style="cyan")
         out.append(hdr)
+        if s.backend == "nvml" and r.gpu.engine_reason:
+            out.append(Text(r.gpu.engine_reason, style="grey62"))
         if not r.host and r.gpu.attributed and r.gpu.inferred_by:
             out.append(Text(inferred_note(r.gpu), style="grey62"))
         if not r.host and not r.gpu.attributed:
