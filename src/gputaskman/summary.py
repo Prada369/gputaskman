@@ -16,7 +16,7 @@ import math
 import statistics
 import time
 
-from .diff import check_adapter
+from .diff import adapter_identity, compare_adapter_identities
 from .llm import gb
 
 RUN_GAP_FACTOR = 10
@@ -72,26 +72,44 @@ def load(path: str) -> tuple[list[dict], int]:
     return samples, skipped
 
 
-def _same_gpu(before: dict, after: dict) -> bool:
-    if (before.get("gpu"), before.get("backend")) != (after.get("gpu"), after.get("backend")):
-        return False
+def _adapter_conflicts(known: dict, current: dict, sample: dict) -> bool:
     try:
-        check_adapter(before, after)
+        compare_adapter_identities(known, current, sample)
     except ValueError:
-        return False
-    return True
+        return True
+    return False
 
 
 def split_runs(samples: list[dict]) -> list[list[dict]]:
     gaps = [b["taken"] - a["taken"] for a, b in zip(samples, samples[1:]) if b["taken"] > a["taken"]]
     limit = max(RUN_GAP_MIN, RUN_GAP_FACTOR * statistics.median(gaps)) if gaps else RUN_GAP_MIN
     runs: list[list[dict]] = []
+    identities: dict[tuple, dict[int | None, dict]] = {}
     for s in samples:
         prev = runs[-1][-1] if runs else None
-        if (prev is None or not _same_gpu(prev, s)
-                or not 0 <= s["taken"] - prev["taken"] <= limit):
+        identity = adapter_identity(s)
+        gpu, backend = s.get("gpu"), s.get("backend")
+        if backend == "wddm":
+            identity.pop("key", None)  # A Windows LUID alone cannot establish a conflict.
+        if "pci" not in identity:
+            identity.pop("pci_domain", None)
+        if (prev is None or (gpu, backend) != (prev.get("gpu"), prev.get("backend"))
+                or not 0 <= s["taken"] - prev["taken"] <= limit
+                or (identity and any(_adapter_conflicts(known, identity, s)
+                                     for keys in identities.values() for known in keys.values()))):
             runs.append([])
+            identities.clear()
         runs[-1].append(s)
+        if identity:
+            signature = tuple((field, value) for field, value in identity.items() if field != "key")
+            keys = identities.setdefault(signature, {})
+            key = identity.get("key")
+            # Two distinct keys already prove any future key-only mismatch for this signature.
+            if len(keys) < 2:
+                keys[key] = identity
+            elif None in keys and key is not None:
+                del keys[None]
+                keys[key] = identity
     return runs
 
 

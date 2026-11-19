@@ -84,6 +84,30 @@ class SummaryTests(unittest.TestCase):
 
         self.assertEqual(split_runs([first, second, older]), [[first, second, older]])
 
+    def test_runs_remember_pci_identity_across_unknown_samples(self):
+        first = dict(snap(0), adapter={"pci_address": [1, 0, 0], "pci_domain": 0, "luid": 1})
+        older = snap(1)
+        same = dict(snap(2), adapter={"pci_address": [1, 0, 0], "luid": 2})
+        different = dict(snap(3), adapter={"pci_address": [1, 0, 0], "pci_domain": 1, "luid": 2})
+
+        self.assertEqual(split_runs([first, older, same]), [[first, older, same]])
+        self.assertEqual(split_runs([first, older, different]), [[first, older], [different]])
+        self.assertEqual(split_runs([first, older, same, different]), [[first, older, same], [different]])
+
+    def test_runs_remember_non_windows_keys_across_unknown_samples(self):
+        first = dict(snap(0, backend="metal"), adapter={"luid": 1})
+        older = snap(1, backend="metal")
+        different = dict(snap(2, backend="metal"), adapter={"luid": 2})
+
+        self.assertEqual(split_runs([first, older, different]), [[first, older], [different]])
+
+    def test_runs_keep_windows_luid_only_samples_across_reboots(self):
+        first = dict(snap(0), adapter={"luid": 1})
+        older = snap(1)
+        rebooted = dict(snap(2), adapter={"luid": 2})
+
+        self.assertEqual(split_runs([first, older, rebooted]), [[first, older, rebooted]])
+
     def test_load_skips_lines_that_do_not_parse(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "s.jsonl")

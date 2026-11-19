@@ -170,7 +170,7 @@ def _num(v) -> int | None:
     return v if isinstance(v, int) and not isinstance(v, bool) else None
 
 
-def _identity(s: dict) -> dict:
+def adapter_identity(s: dict) -> dict:
     """Comparable adapter identity: vendor, PCI address (including a known domain), and adapter key.
 
     Missing and malformed values are left out. Zero vendor IDs and adapter keys are unknown;
@@ -206,8 +206,11 @@ def check_adapter(before: dict, after: dict) -> tuple[str, str | None]:
     so there a differing key is only a warning. Both identifiers are host-local: they tell two GPUs in one
     machine apart, not two computers.
     """
-    b, a = _identity(before), _identity(after)
+    return compare_adapter_identities(adapter_identity(before), adapter_identity(after), after)
 
+
+def compare_adapter_identities(b: dict, a: dict, after: dict) -> tuple[str, str | None]:
+    """Apply the snapshot comparison rules to already parsed adapter identities."""
     def different(what: str) -> ValueError:
         return ValueError(f"snapshots are from different adapters, though both are named {after.get('gpu')!r}: {what}")
 
