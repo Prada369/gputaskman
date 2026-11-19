@@ -292,24 +292,50 @@ def _model_entry(name, type_=None, quant=None, ctx=None, size=None, size_vram=No
     return {"name": name, "type": type_, "quant": quant, "ctx": ctx, "size": size, "size_vram": size_vram, "path": path}
 
 
+def _runtime_text(value) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _runtime_int(value) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
 _MODALITY = {"text": "llm", "decisions": "decision", "embeddings": "embedding", "embedding": "embedding"}
 
 
 def llama_server_models(v1: dict, model_path: str | None) -> list[dict]:
     out = []
-    for m in v1.get("data") or []:
-        outs = (m.get("architecture") or {}).get("output_modalities") or []
-        meta = m.get("meta") or {}
-        out.append(_model_entry(os.path.basename(m.get("id") or model_path or "?"),
-                                next((_MODALITY.get(o, o) for o in outs), None),
-                                meta.get("ftype"), meta.get("n_ctx"), meta.get("size"), None, model_path))
+    entries = v1.get("data")
+    for m in entries if isinstance(entries, list) else []:
+        if not isinstance(m, dict):
+            continue
+        architecture = m.get("architecture")
+        outs = architecture.get("output_modalities") if isinstance(architecture, dict) else None
+        outs = [o for o in outs if isinstance(o, str)] if isinstance(outs, list) else []
+        meta = m.get("meta")
+        meta = meta if isinstance(meta, dict) else {}
+        model_id = _runtime_text(m.get("id"))
+        path = _runtime_text(model_path)
+        name = os.path.basename(model_id if model_id else path or "?")
+        out.append(_model_entry(name, next((_MODALITY.get(o, o) for o in outs), None),
+                                _runtime_text(meta.get("ftype")), _runtime_int(meta.get("n_ctx")),
+                                _runtime_int(meta.get("size")), None, path))
     return out
 
 
 def ollama_models(ps: dict) -> list[dict]:
-    return [_model_entry(m.get("name"), "llm", (m.get("details") or {}).get("quantization_level"),
-                         m.get("context_length"), m.get("size"), m.get("size_vram"))
-            for m in ps.get("models") or []]
+    entries = ps.get("models")
+    out = []
+    for m in entries if isinstance(entries, list) else []:
+        if not isinstance(m, dict):
+            continue
+        details = m.get("details")
+        details = details if isinstance(details, dict) else {}
+        out.append(_model_entry(_runtime_text(m.get("name")), "llm",
+                                _runtime_text(details.get("quantization_level")),
+                                _runtime_int(m.get("context_length")), _runtime_int(m.get("size")),
+                                _runtime_int(m.get("size_vram"))))
+    return out
 
 
 def lmstudio_models(v1: dict | None, v0: dict | None) -> list[dict] | None:
@@ -317,18 +343,35 @@ def lmstudio_models(v1: dict | None, v0: dict | None) -> list[dict] | None:
     if isinstance(v1, dict) and isinstance(v1.get("models"), list):
         out = []
         for m in v1["models"]:
-            for inst in m.get("loaded_instances") or []:
-                q = m.get("quantization") or {}
-                t = m.get("type")
-                if t == "decision" and m.get("decision_type"):
-                    t = f"decision ({m['decision_type']})"
-                out.append(_model_entry(inst.get("id") or m.get("key"), t, q.get("name"),
-                                        (inst.get("config") or {}).get("context_length"), m.get("size_bytes")))
+            if not isinstance(m, dict):
+                continue
+            instances = m.get("loaded_instances")
+            for inst in instances if isinstance(instances, list) else []:
+                if not isinstance(inst, dict):
+                    continue
+                q = m.get("quantization")
+                q = q if isinstance(q, dict) else {}
+                t = _runtime_text(m.get("type"))
+                decision_type = _runtime_text(m.get("decision_type"))
+                if t == "decision" and isinstance(decision_type, str) and decision_type:
+                    t = f"decision ({decision_type})"
+                config = inst.get("config")
+                config = config if isinstance(config, dict) else {}
+                out.append(_model_entry(_runtime_text(inst.get("id")) or _runtime_text(m.get("key")), t,
+                                        _runtime_text(q.get("name")), _runtime_int(config.get("context_length")),
+                                        _runtime_int(m.get("size_bytes"))))
         return out
     if isinstance(v0, dict) and isinstance(v0.get("data"), list):
-        return [_model_entry(m.get("id"), m.get("type"), m.get("quantization"),
-                             m.get("loaded_context_length") or m.get("max_context_length"))
-                for m in v0["data"] if m.get("state") == "loaded"]
+        out = []
+        for m in v0["data"]:
+            if not isinstance(m, dict) or m.get("state") != "loaded":
+                continue
+            ctx = _runtime_int(m.get("loaded_context_length"))
+            if ctx is None:
+                ctx = _runtime_int(m.get("max_context_length"))
+            out.append(_model_entry(_runtime_text(m.get("id")), _runtime_text(m.get("type")),
+                                    _runtime_text(m.get("quantization")), ctx))
+        return out
     return None
 
 
@@ -381,10 +424,13 @@ def probe_server(port: int, prev: ServerInfo | None = None, key: str | None = No
     if props is UNAUTHORIZED:
         return UNAUTHORIZED
     if isinstance(props, dict) and ("default_generation_settings" in props or "model_path" in props):
-        s = ServerInfo("llama-server", base, model_path=props.get("model_path"))
-        dgs = props.get("default_generation_settings") or {}
-        s.n_ctx = dgs.get("n_ctx") or props.get("n_ctx")
-        s.slots_total = props.get("total_slots")
+        s = ServerInfo("llama-server", base, model_path=_runtime_text(props.get("model_path")))
+        dgs = props.get("default_generation_settings")
+        dgs = dgs if isinstance(dgs, dict) else {}
+        s.n_ctx = _runtime_int(dgs.get("n_ctx"))
+        if s.n_ctx is None:
+            s.n_ctx = _runtime_int(props.get("n_ctx"))
+        s.slots_total = _runtime_int(props.get("total_slots"))
         if prev and prev.kind == "llama-server" and prev.model_path == s.model_path:
             s.models = prev.models  # identity only changes when the model does
         else:
@@ -392,8 +438,9 @@ def probe_server(port: int, prev: ServerInfo | None = None, key: str | None = No
             s.models = llama_server_models(v1, s.model_path) if isinstance(v1, dict) else []
         slots = _get(base + "/slots", key=key)
         if isinstance(slots, list):
+            slots = [slot for slot in slots if isinstance(slot, dict)]
             s.slots_total = len(slots)
-            s.slots_busy = sum(1 for x in slots if x.get("is_processing"))
+            s.slots_busy = sum(1 for slot in slots if slot.get("is_processing") is True)
             s.requests_running = s.slots_busy
         metrics = _get(base + "/metrics", key=key)
         if isinstance(metrics, str):

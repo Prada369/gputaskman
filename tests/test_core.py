@@ -33,8 +33,8 @@ from gputaskman.gguf import GgufInfo, read_gguf
 from gputaskman.handy import HandyEvidence, inspect_handy, _log_cache, _settings_cache
 from gputaskman.host import HostSample
 from gputaskman.llm import (LlmView, ServerInfo, ServerProber, _get, api_key, build_view, is_gpu_device,
-                            llama_server_models, lmstudio_models, parse_flags, parse_load_log, probe_server,
-                            redact_cmdline)
+                            llama_server_models, lmstudio_models, ollama_models, parse_flags, parse_load_log,
+                            probe_server, redact_cmdline)
 from gputaskman.nvml import NvDevice, Nvml
 from gputaskman.pdh import AdapterGpu, GpuCounters, ProcGpu
 from gputaskman.procinfo import (AI_KINDS, AMBIGUOUS_EXTS, MODEL_EXTS, PATH_ARG_CANDIDATES, PATH_ARG_TOKENS,
@@ -1570,6 +1570,45 @@ class IdentityTests(unittest.TestCase):
         llama = {"data": [{"id": r"C:\m\Laya-Q8_0.gguf", "architecture": {"output_modalities": ["decisions"]},
                            "meta": {"ftype": "Q8_0", "n_ctx": 8192, "size": 447}}]}
         self.assertEqual(llama_server_models(llama, r"C:\m\Laya-Q8_0.gguf")[0]["type"], "decision")
+
+    def test_runtime_api_parsers_skip_malformed_entries_and_nested_values(self):
+        llama = {"data": [None, "bad", {"id": "good", "architecture": None,
+                                         "meta": {"n_ctx": [], "size": {}}}]}
+        llama_models = llama_server_models(llama, None)
+        self.assertEqual([m["name"] for m in llama_models], ["good"])
+        self.assertEqual((llama_models[0]["ctx"], llama_models[0]["size"]), (None, None))
+
+        ollama = {"models": [None, 7, {"name": "good", "details": [], "size": 0, "size_vram": 0},
+                             {"name": "bad", "size": [], "size_vram": {}}]}
+        self.assertEqual(ollama_models(ollama), [
+            {"name": "good", "type": "llm", "quant": None, "ctx": None, "size": 0, "size_vram": 0, "path": None},
+            {"name": "bad", "type": "llm", "quant": None, "ctx": None, "size": None, "size_vram": None, "path": None},
+        ])
+
+        lmstudio = {"models": [
+            None,
+            {"key": "good", "quantization": [], "loaded_instances": [None, {"id": "good", "config": None}]},
+            {"key": "idle", "loaded_instances": None},
+        ]}
+        self.assertEqual(lmstudio_models(lmstudio, None), [
+            {"name": "good", "type": None, "quant": None, "ctx": None, "size": None, "size_vram": None, "path": None}
+        ])
+        self.assertEqual(lmstudio_models(None, {"data": [None, {"state": "loaded", "id": "good"}]}), [
+            {"name": "good", "type": None, "quant": None, "ctx": None, "size": None, "size_vram": None, "path": None}
+        ])
+
+    def test_malformed_llama_server_response_does_not_stop_probe(self):
+        with patch("gputaskman.llm._get", side_effect=[
+                {"model_path": [], "default_generation_settings": None, "n_ctx": [], "total_slots": {}},
+                {"data": []},
+                [{"is_processing": True}, None, 7, {"is_processing": False}],
+                None,
+        ]):
+            server = probe_server(8080)
+        self.assertEqual(server.kind, "llama-server")
+        self.assertIsNone(server.n_ctx)
+        self.assertEqual(server.models, [])
+        self.assertEqual((server.slots_total, server.slots_busy, server.requests_running), (2, 1, 1))
 
     def test_api_key_from_launch_arguments(self):
         self.assertEqual(api_key(["llama-server", "--api-key", "abc"]), "abc")
