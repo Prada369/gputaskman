@@ -206,6 +206,7 @@ class ServerInfo:
     requests_running: int | None = None
     requests_waiting: int | None = None
     kv_cache_usage: float | None = None  # fraction 0-1 of KV-cache pool, not of GPU memory
+    models_complete: bool = True  # internal guard against inferring a singleton from partial API data
 
 
 def _metric(text: str, name: str) -> float | None:
@@ -338,16 +339,22 @@ def ollama_models(ps: dict) -> list[dict]:
     return out
 
 
-def lmstudio_models(v1: dict | None, v0: dict | None) -> list[dict] | None:
+def lmstudio_models(v1: dict | None, v0: dict | None) -> tuple[list[dict], bool] | None:
     """Loaded models from LM Studio's /api/v1/models (preferred) or /api/v0/models."""
     if isinstance(v1, dict) and isinstance(v1.get("models"), list):
         out = []
+        complete = True
         for m in v1["models"]:
             if not isinstance(m, dict):
+                complete = False
                 continue
             instances = m.get("loaded_instances")
-            for inst in instances if isinstance(instances, list) else []:
+            if not isinstance(instances, list):
+                complete = False
+                continue
+            for inst in instances:
                 if not isinstance(inst, dict):
+                    complete = False
                     continue
                 q = m.get("quantization")
                 q = q if isinstance(q, dict) else {}
@@ -361,23 +368,29 @@ def lmstudio_models(v1: dict | None, v0: dict | None) -> list[dict] | None:
                 if not name or not name.strip():
                     name = _runtime_text(m.get("key"))
                 if not name or not name.strip():
+                    complete = False
                     continue
                 out.append(_model_entry(name, t, _runtime_text(q.get("name")),
                                         _runtime_int(config.get("context_length")), _runtime_int(m.get("size_bytes"))))
-        return out
+        return out, complete
     if isinstance(v0, dict) and isinstance(v0.get("data"), list):
         out = []
+        complete = True
         for m in v0["data"]:
-            if not isinstance(m, dict) or m.get("state") != "loaded":
+            if not isinstance(m, dict) or not isinstance(m.get("state"), str):
+                complete = False
+                continue
+            if m["state"] != "loaded":
                 continue
             name = _runtime_text(m.get("id"))
             if not name or not name.strip():
+                complete = False
                 continue
             ctx = _runtime_int(m.get("loaded_context_length"))
             if ctx is None:
                 ctx = _runtime_int(m.get("max_context_length"))
             out.append(_model_entry(name, _runtime_text(m.get("type")), _runtime_text(m.get("quantization")), ctx))
-        return out
+        return out, complete
     return None
 
 
@@ -470,7 +483,8 @@ def probe_server(port: int, prev: ServerInfo | None = None, key: str | None = No
     if loaded is None:
         loaded = lmstudio_models(None, _get(base + "/api/v0/models"))
     if loaded is not None:
-        return ServerInfo("lmstudio", base, models=loaded)
+        models, complete = loaded
+        return ServerInfo("lmstudio", base, models=models, models_complete=complete)
     return None
 
 
@@ -595,7 +609,8 @@ def _merge_api(files: list[MappedModel], server: ServerInfo | None, host: Server
                     matched.append(om)
     lms = host if host and host.kind == "lmstudio" else (server if server and server.kind == "lmstudio" else None)
     primary = [f for f in files if f.has_model_evidence and f.kind not in _SIDE_KINDS]
-    if lms and len(lms.models) == 1 and len(primary) == 1:  # LM Studio keys don't map to paths; only pair 1:1
+    if lms and lms.models_complete and len(lms.models) == 1 and len(primary) == 1:
+        # LM Studio keys don't map to paths; only pair a complete one-to-one listing.
         primary[0].add_source("api")
         matched.append(lms.models[0])
     return matched

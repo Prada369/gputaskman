@@ -1561,11 +1561,15 @@ class IdentityTests(unittest.TestCase):
              "size_bytes": 449, "loaded_instances": [{"id": "laya", "config": {"context_length": 8192}}]},
             {"type": "llm", "key": "idle", "loaded_instances": []},
         ]}
-        self.assertEqual(lmstudio_models(v1, None), [{"name": "laya", "type": "decision (laya)", "quant": "Q8_0",
-                                                      "ctx": 8192, "size": 449, "size_vram": None, "path": None}])
+        models, complete = lmstudio_models(v1, None)
+        self.assertEqual(models, [{"name": "laya", "type": "decision (laya)", "quant": "Q8_0",
+                                   "ctx": 8192, "size": 449, "size_vram": None, "path": None}])
+        self.assertTrue(complete)
         v0 = {"data": [{"id": "a", "type": "llm", "state": "loaded", "quantization": "Q4_K_M", "loaded_context_length": 4096},
                        {"id": "b", "state": "not-loaded"}]}
-        self.assertEqual([(m["name"], m["ctx"]) for m in lmstudio_models(None, v0)], [("a", 4096)])
+        models, complete = lmstudio_models(None, v0)
+        self.assertEqual([(m["name"], m["ctx"]) for m in models], [("a", 4096)])
+        self.assertTrue(complete)
         self.assertIsNone(lmstudio_models(None, None))
         llama = {"data": [{"id": r"C:\m\Laya-Q8_0.gguf", "architecture": {"output_modalities": ["decisions"]},
                            "meta": {"ftype": "Q8_0", "n_ctx": 8192, "size": 447}}]}
@@ -1590,10 +1594,14 @@ class IdentityTests(unittest.TestCase):
             {"key": "good", "quantization": [], "loaded_instances": [None, {"id": "good", "config": None}]},
             {"key": "idle", "loaded_instances": None},
         ]}
-        self.assertEqual(lmstudio_models(lmstudio, None), [
+        models, complete = lmstudio_models(lmstudio, None)
+        self.assertFalse(complete)
+        self.assertEqual(models, [
             {"name": "good", "type": None, "quant": None, "ctx": None, "size": None, "size_vram": None, "path": None}
         ])
-        self.assertEqual(lmstudio_models(None, {"data": [None, {"state": "loaded", "id": "good"}]}), [
+        models, complete = lmstudio_models(None, {"data": [None, {"state": "loaded", "id": "good"}]})
+        self.assertFalse(complete)
+        self.assertEqual(models, [
             {"name": "good", "type": None, "quant": None, "ctx": None, "size": None, "size_vram": None, "path": None}
         ])
 
@@ -2002,17 +2010,54 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(model.sources, ["cmdline"])
 
     def test_lmstudio_instance_without_an_identifier_does_not_correlate_a_model(self):
-        models = lmstudio_models({"models": [
+        models, complete = lmstudio_models({"models": [
             {"key": [], "loaded_instances": [{"id": []}]},
         ]}, None)
+        self.assertFalse(complete)
         self.assertEqual(models, [])
-        self.assertEqual(lmstudio_models(None, {"data": [{"state": "loaded"}]}), [])
+        models, complete = lmstudio_models(None, {"data": [{"state": "loaded"}]})
+        self.assertFalse(complete)
+        self.assertEqual(models, [])
         model = MappedModel("m.gguf", 1000, 0, True, ["mapped"], kind="LLM")
         detail = ProcDetail(6, "llama-server.exe", models=[model])
         host = ServerInfo("lmstudio", "http://127.0.0.1:1", models=models)
         with patch("gputaskman.llm.read_gguf", return_value=gguf("qwen3", block_count=1)):
             view = build_view(detail, GiB, 0, None, host=host)
         self.assertEqual(view.files[0].sources, ["mapped"])
+
+    def test_lmstudio_incomplete_loaded_list_cannot_correlate_as_singleton(self):
+        response = {"models": [
+            {"key": "qwen3", "type": "llm", "loaded_instances": [{"id": "qwen3"}]},
+            {"key": "other", "type": "llm", "loaded_instances": [None]},
+        ]}
+        with patch("gputaskman.llm._get", side_effect=[None, None, response]):
+            server = probe_server(8080)
+        self.assertEqual([model["name"] for model in server.models], ["qwen3"])
+        self.assertFalse(server.models_complete)
+
+        model = MappedModel("m.gguf", 1000, 0, True, ["mapped"], kind="LLM")
+        detail = ProcDetail(6, "llama-server.exe", models=[model])
+        with patch("gputaskman.llm.read_gguf", return_value=gguf("qwen3", block_count=1)):
+            view = build_view(detail, GiB, 0, server)
+        self.assertEqual(view.files[0].sources, ["mapped"])
+        snap = snapshot()
+        snap.procs[0].llm = view
+        server_json = to_dict(snap)["processes"][0]["llm"]["server"]
+        self.assertNotIn("models_complete", server_json)
+        self.assertIn("slots=n/a/n/a", to_text(snap))
+
+    def test_lmstudio_complete_singleton_can_correlate_one_mapped_model(self):
+        response = {"models": [
+            {"key": "qwen3", "type": "llm", "loaded_instances": [{"id": "qwen3"}]},
+        ]}
+        with patch("gputaskman.llm._get", side_effect=[None, None, response]):
+            server = probe_server(8080)
+        self.assertTrue(server.models_complete)
+        model = MappedModel("m.gguf", 1000, 0, True, ["mapped"], kind="LLM")
+        detail = ProcDetail(6, "llama-server.exe", models=[model])
+        with patch("gputaskman.llm.read_gguf", return_value=gguf("qwen3", block_count=1)):
+            view = build_view(detail, GiB, 0, server)
+        self.assertEqual(view.files[0].sources, ["mapped", "api"])
 
     def test_ollama_unknown_vram_usage_is_not_rendered_as_zero(self):
         for size_vram, expected in ((None, "n/a"), ([], "n/a"), (0, "0%"), (GiB, "100%")):
