@@ -421,10 +421,12 @@ class Collector:
             shared_is_spill=not (integrated_gpu or (self.drm_card is not None and self.drm_card.integrated)),
         )
 
-        snap.host_status = self.host_status
         fallbacks = getattr(self.counters, "fallback_counters", None)
-        if BACKEND == "wddm" and isinstance(fallbacks, set) and "dedicated" in fallbacks:
+        missing_dedicated = getattr(self.counters, "dedicated_counter_missing", False) is True
+        if BACKEND == "wddm" and (missing_dedicated or
+                                  (isinstance(fallbacks, set) and "dedicated" in fallbacks)):
             snap.process_memory_available = False
+        snap.host_status = self.host_status
         if BACKEND == "wsl" and (not self.adapter or self.adapter.vendor_id == VENDOR_AMD):
             snap.counter_status = " ".join(dict.fromkeys(filter(None, (amdsmi_status(), self.amdsmi.status))))
             if self.adapter is None:
@@ -455,6 +457,10 @@ class Collector:
                 snap.counter_status = " ".join(filter(None, (
                     snap.counter_status, "Windows fallback process memory counters may overlap across processes; "
                     "charged memory and Paged are unavailable for affected counters.")))
+            if missing_dedicated:
+                snap.counter_status = " ".join(filter(None, (
+                    snap.counter_status, "Windows per-process dedicated memory counters are unavailable; "
+                    "attributed VRAM is unknown.")))
         if self.drm_card is not None:
             snap.process_status = self.counters.drm.status
             if self.drm_card.intel and nv is not None:

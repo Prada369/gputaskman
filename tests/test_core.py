@@ -915,6 +915,41 @@ class MemoryTests(unittest.TestCase):
         self.assertIsNone(s.attributed)
         self.assertIn("may overlap", s.counter_status)
 
+    def test_missing_dedicated_counter_is_unknown_with_no_process_rows(self):
+        for selected in ("preferred", "fallback", "missing"):
+            with self.subTest(selected=selected):
+                def add(query, path, user, handle):
+                    preferred, fallback = GpuCounters._COUNTERS["dedicated"]
+                    if path == preferred and selected != "preferred":
+                        return 1
+                    if path == fallback and selected == "missing":
+                        return 1
+                    return 0
+
+                pdh = SimpleNamespace(PdhOpenQueryW=lambda *args: 0, PdhAddEnglishCounterW=add,
+                                      PdhCollectQueryData=lambda *args: 0)
+                data = {"a_dedicated": [("luid_0x0_0x1_phys_0", 512 * MiB)],
+                        "a_shared": [("luid_0x0_0x1_phys_0", 0)]}
+                with patch("gputaskman.pdh._load_pdh"), patch("gputaskman.pdh._pdh", pdh):
+                    counters = GpuCounters()
+                    self.assertEqual(counters.dedicated_counter_missing, selected == "missing")
+                    c = Collector.__new__(Collector)
+                    c.adapter = Adapter(1, "GPU", 0x10DE, 16 * GiB, 0, False)
+                    c.adapters = [c.adapter]
+                    c.gpu_index, c.scan_budget, c.host, c.host_status = 0, None, None, ""
+                    c.nvml = Mock(ok=False)
+                    c.counters = counters
+                    c.inspector, c.prober = Mock(), Mock()
+                    with patch.object(counters, "_read", side_effect=lambda key: data.get(key, [])), \
+                            patch("gputaskman.collector.BACKEND", "wddm"):
+                        s = c.sample()
+                self.assertEqual(s.procs, [])
+                self.assertEqual(s.vram_used, 512 * MiB)
+                self.assertEqual(s.attributed, 0 if selected == "preferred" else None)
+                self.assertEqual("per-process dedicated memory counters are unavailable" in s.counter_status,
+                                 selected == "missing")
+                self.assertEqual(to_dict(s)["attributed"], s.attributed)
+
     def test_paged_is_clamped_commit_difference(self):
         gpu = ProcGpu(dedicated=100, shared=20, committed=150)
         self.assertEqual(gpu.paged_out, 30)

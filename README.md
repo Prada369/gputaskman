@@ -935,6 +935,8 @@ them as `wddm_dedicated_usage_bytes` and `wddm_shared_usage_bytes`, with
 `vram_counter_source` and `shared_counter_source` identifying the selected counter for each
 row. The corresponding charged `vram_bytes` or `shared_bytes` is `null`, and attributed VRAM
 is unknown when the dedicated fallback is selected, even if no process row is visible.
+If neither dedicated process counter can be added, attributed VRAM is also unknown and the
+counter status explains why.
 Preferred counters continue to be reported as `Local Usage` and `Non Local Usage`.
 Replay shows recorded fallback readings in the process note.
 Fallback-counter behavior has not been validated on hardware where the preferred counters are unavailable.
