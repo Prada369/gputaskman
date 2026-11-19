@@ -55,6 +55,18 @@ def vram_label(g: ProcGpu) -> str:
     return "n/a" if g.shown_vram is None else gb(g.shown_vram) + vram_mark(g.inferred_by)
 
 
+def wddm_fallback_note(g: ProcGpu) -> str:
+    parts = []
+    if g.wddm_dedicated_usage is not None:
+        parts.append(f"Dedicated Usage {gb(g.wddm_dedicated_usage)}")
+    if g.wddm_shared_usage is not None:
+        parts.append(f"Shared Usage {gb(g.wddm_shared_usage)}")
+    if not parts:
+        return ""
+    return ("Windows fallback " + ", ".join(parts) + ": may include surfaces shared across processes; "
+            "not attributed bytes and not added to totals or used for Paged.")
+
+
 INFERRED_NOTE = ("* matched: the size is exact (Windows' counter for a WSL VM GPU context, or NVML for a host PID "
                  "seen from a container); which local process owns it is inferred, and only one explanation fits "
                  "(or every one that fits gives the same size).")
@@ -126,7 +138,7 @@ def to_dict(s: Snapshot) -> dict:
         item = {
             "pid": p.pid, "host": p.origin if p.host else None, "name": p.name, "kind": p.kind, "runtimes": p.detail.runtimes,
             "started_at": round(p.detail.create_time, 3) or None,  # unknown (protected process, WSL host row) is null
-            "vram_attributed": p.gpu.attributed, "vram_inferred_bytes": p.gpu.inferred,
+            "vram_attributed": p.gpu.attributed and "dedicated" in p.gpu.available, "vram_inferred_bytes": p.gpu.inferred,
             "vram_inferred_by": p.gpu.inferred_by or None,
             "vram_bytes": int(p.gpu.dedicated) if p.gpu.attributed and "dedicated" in p.gpu.available else None,
             "vram_resident_bytes": (int(p.gpu.resident_vram) if s.backend == "drm" and not p.host
@@ -135,6 +147,16 @@ def to_dict(s: Snapshot) -> dict:
                                    and p.gpu.resident_gtt is not None else None),
             "vram_unattributed_reason": p.gpu.drm_reason or None if s.backend == "drm" and not p.host else None,
             "shared_bytes": int(p.gpu.shared) if has_shared_counters(s, p) else None,
+            "wddm_dedicated_usage_bytes": (int(p.gpu.wddm_dedicated_usage)
+                                           if p.gpu.wddm_dedicated_usage is not None else None),
+            "wddm_shared_usage_bytes": (int(p.gpu.wddm_shared_usage)
+                                        if p.gpu.wddm_shared_usage is not None else None),
+            "vram_counter_source": ("Dedicated Usage" if p.gpu.wddm_dedicated_usage is not None else
+                                    "Local Usage" if wddm and not isinstance(s.adapter, TccAdapter)
+                                    and "dedicated" in p.gpu.available else None),
+            "shared_counter_source": ("Shared Usage" if p.gpu.wddm_shared_usage is not None else
+                                      "Non Local Usage" if wddm and not isinstance(s.adapter, TccAdapter)
+                                      and "shared" in p.gpu.available else None),
             "committed_bytes": int(p.gpu.committed) if wddm and "committed" in p.gpu.available else None,
             "paged_out_bytes": int(p.gpu.paged_out) if wddm and p.gpu.paged_available else None,
             "graphics_swapped_bytes": (int(p.gpu.graphics_swapped) if s.backend == "metal" and p.gpu.attributed
@@ -256,6 +278,10 @@ def to_text(s: Snapshot, limit: int = 30) -> str:
         out.append(INFERRED_NOTE)
     if any(p.gpu.inferred_by == "order" for p in shown):
         out.append(ORDER_NOTE)
+    for p in shown:
+        note = wddm_fallback_note(p.gpu)
+        if note:
+            out.append(f"{p.name} ({p.pid_label}): {note}")
     if s.backend == "drm":
         for note in dict.fromkeys(drm_note(p.gpu) for p in shown if not p.host):
             if note:

@@ -161,6 +161,7 @@ def _is_live(g: ProcGpu) -> bool:
     # graphics_swapped is macOS compressed graphics memory and is not added to dedicated.
     return (
         bool(g.engine_reason) or not g.attributed or g.dedicated >= MiB or g.gpu_pct >= 0.5
+        or (g.wddm_dedicated_usage or 0) >= MiB or (g.wddm_shared_usage or 0) >= 16 * MiB
         or g.shared >= 16 * MiB or g.paged_out >= 16 * MiB or (g.graphics_swapped or 0) >= 16 * MiB
     )
 
@@ -419,6 +420,11 @@ class Collector:
             shared_is_spill=not (integrated_gpu or (self.drm_card is not None and self.drm_card.integrated)),
         )
 
+        fallbacks = getattr(self.counters, "fallback_counters", None)
+        missing_dedicated = getattr(self.counters, "dedicated_counter_missing", False) is True
+        if BACKEND == "wddm" and (missing_dedicated or
+                                  (isinstance(fallbacks, set) and "dedicated" in fallbacks)):
+            snap.process_memory_available = False
         if BACKEND == "metal" and self.counters.hidden_unmeasured:
             snap.process_memory_available = False
             snap.counter_status = "Attributed GPU memory is unknown: some idle Metal clients have unmeasured memory."
@@ -453,6 +459,18 @@ class Collector:
                     snap.counter_status, "NVIDIA telemetry stopped after this GPU was re-enabled; "
                                          "restart gputaskman to restore it.")))
             snap.counter_status = " ".join(filter(None, (snap.counter_status, self.adapter.identity_status)))
+            if isinstance(fallbacks, set) and fallbacks:
+                snap.counter_status = " ".join(filter(None, (
+                    snap.counter_status, "Windows fallback process memory counters may overlap across processes; "
+                    "charged memory and Paged are unavailable for affected counters.")))
+            if missing_dedicated:
+                snap.counter_status = " ".join(filter(None, (
+                    snap.counter_status, "Windows per-process dedicated memory counters are unavailable; "
+                    "attributed VRAM is unknown.")))
+            if getattr(self.counters, "shared_counter_missing", False) is True:
+                snap.counter_status = " ".join(filter(None, (
+                    snap.counter_status, "Windows per-process shared memory counters are unavailable; "
+                    "shared memory and Paged are unknown.")))
         if self.drm_card is not None:
             snap.process_status = self.counters.drm.status
             if self.drm_card.intel and nv is not None:
@@ -472,7 +490,7 @@ class Collector:
                 snap.process_memory_available = False
                 snap.counter_status = process_status
         live = [(pid, g) for pid, g in procs.items() if _is_live(g) or pid in integrated_local_pids]
-        live.sort(key=lambda x: -(x[1].shown_vram or 0))
+        live.sort(key=lambda x: -(x[1].shown_vram or x[1].wddm_dedicated_usage or 0))
         for pid, g in live:
             d = self.inspector.get(pid)
             row = ProcRow(pid=pid, name=d.name, kind=classify(d, g.engines), gpu=g, detail=d)
