@@ -452,7 +452,7 @@ class ContextTracker:
             self.initial.discard(pid)  # a reused PID is a new process, not one that was running at startup
             self.gone[pid] = now
         for e in cur:
-            if e.label in self.gone and not isinstance(e.label, tuple):
+            if e.label in self.gone and e.label not in start and not isinstance(e.label, tuple):
                 e.label, e.sure = ("gone", e.label), False
             if isinstance(e.label, tuple) and now - self.gone.get(e.label[1], 0) > self.GONE:
                 e.label = None
