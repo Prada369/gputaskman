@@ -191,6 +191,8 @@ peaks in `summary` or a budget for a model breakdown. Local GPU% and engines are
 `engine_unavailable_reason`: the host's engine readings do not establish which local process did the work.
 Independently evidenced model files still supply metadata and model/flag-based estimates, with an
 explicitly unknown process VRAM total; neither those estimates nor the mapped file prove GPU ownership.
+Recognized LLM runtime names/signatures can still query their own exclusive listeners for API evidence
+without a mapped model file; a generic process's path-argument or installed-model hints cannot enable a probe.
 Every NVML host PID is retained as `H:<pid>` / `(unresolved host PID)` (`host: "nvml"` in JSON), never
 looked up locally. Those rows preserve measured memory and engine counters under the driver's actual
 PID. Only their measured bytes enter the attributed total, once, not again through a local guess.
