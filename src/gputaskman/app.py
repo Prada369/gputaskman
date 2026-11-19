@@ -37,8 +37,8 @@ SPARK = "▁▂▃▄▅▆▇█"
 
 EXPLAIN = {
     "wsl-vm": "The WSL virtual machine as Windows sees it. Windows charges all GPU memory used by Linux processes "
-              "in every WSL distro (and WSLg) to vmwp.exe, so this is the exact total. The split across Linux "
-              "processes is not exposed.",
+              "in every WSL distro (and WSLg) to vmwp.exe, so measured VRAM is the exact total. The split across "
+              "Linux processes is not exposed.",
     "compositor": "Desktop Window Manager: its own back buffers and the composed image for each monitor. "
                   "Windows' 'Dedicated Usage' counter shows dwm as huge (it counts every app surface it can see); "
                   "this tool prefers Local Usage for attribution. The adapter counter is the total; "
@@ -106,9 +106,10 @@ listed, and the header says how many it couldn't; run with `sudo` to see other u
 charges all Linux GPU memory to the VM (`vmwp.exe`), so VRAM and load are device-wide only; rows
 are Linux processes with `/dev/dxg` open and show `n/a` rather than a made-up share. When WSL
 interop is enabled, the Windows host's counters are read through `powershell.exe`: **WSL VM**
-(`vmwp.exe`) is then the exact total of Linux GPU memory, and Windows apps appear as `W:<pid>`
-rows. `--no-host` turns this off. Linux rows get their VRAM by matching the VM's GPU contexts
-(newest first) to Linux processes: `*` when candidates agree on the size, `?` for a heuristic owner.
+(`vmwp.exe`) shows the exact total of Linux GPU memory when its VRAM counter is available, and
+Windows apps appear as `W:<pid>` rows. `--no-host` turns this off. Linux rows get their VRAM by
+matching the VM's GPU contexts (newest first) to Linux processes: `*` when candidates agree on the
+size, `?` for a heuristic owner.
 Cached foreign sizes only help rank guesses; they never prove ownership across runs.
 
 **Why does nvidia-smi say N/A?** GeForce cards on Windows run in *WDDM* mode: Windows, not the

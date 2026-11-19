@@ -75,9 +75,8 @@ public static class GtmPdh {
                     IntPtr item = buf + k * stride;
                     uint status = (uint)Marshal.ReadInt32(item, IntPtr.Size);
                     double value = BitConverter.Int64BitsToDouble(Marshal.ReadInt64(item, IntPtr.Size + 8));
-                    // Zero-size GPU contexts still matter: vmwp.exe's instances are matched to Linux
-                    // processes by position, so "local usage" keeps them; everything else drops zeros.
-                    if ((status != 0 && status != 1) || (value == 0 && i != 0)) continue;
+                    // A valid zero is a reading, including zero-size vmwp.exe contexts used for matching.
+                    if (status != 0 && status != 1) continue;
                     string name = Marshal.PtrToStringUni(Marshal.ReadIntPtr(item)).Replace("\\", "\\\\").Replace("\"", "\\\"");
                     if (!first) sb.Append(',');
                     first = false;
@@ -150,6 +149,13 @@ def parse_line(line: str, now: float | None = None) -> HostSample | None:
     adapters: dict[int, AdapterGpu] = defaultdict(AdapterGpu)
     contexts: dict[int, dict[int, list[float]]] = defaultdict(lambda: defaultdict(list))
     invalid_processes: set[tuple[int, int]] = set()
+
+    def proc(luid: int, pid: int) -> ProcGpu:
+        per_adapter = procs[luid]
+        if pid not in per_adapter:
+            per_adapter[pid] = ProcGpu(available=set())
+        return per_adapter[pid]
+
     for row in data.get("s") or []:
         try:
             counter, instance, value = str(row[0]).lower(), str(row[1]).lower(), float(row[2])
@@ -159,7 +165,7 @@ def parse_line(line: str, now: float | None = None) -> HostSample | None:
             m = _ENGINE_RE.match(instance)
             if m:
                 luid, pid = luid_key(m[2], m[3]), int(m[1])
-                g = procs[luid].setdefault(pid, ProcGpu())
+                g = proc(luid, pid)
                 if not valid_engine_counter(value):
                     g.engines.clear()
                     g.available.discard("engine")
@@ -167,14 +173,17 @@ def parse_line(line: str, now: float | None = None) -> HostSample | None:
                     invalid_processes.add((luid, pid))
                 elif (luid, pid) not in invalid_processes:
                     g.engines[_norm_engine(m[6])] += value
+                    g.available.add("engine")
         elif counter in _PROC_FIELDS:
             m = _PROC_RE.match(instance)
             if m:
-                g = procs[luid_key(m[2], m[3])].setdefault(int(m[1]), ProcGpu())
+                luid, pid = luid_key(m[2], m[3]), int(m[1])
+                g = proc(luid, pid)
                 attr = _PROC_FIELDS[counter]
                 setattr(g, attr, getattr(g, attr) + value)  # vmwp.exe has one instance per guest context
+                g.available.add(attr)
                 if attr == "dedicated":
-                    contexts[luid_key(m[2], m[3])][int(m[1])].append(value)
+                    contexts[luid][pid].append(value)
         elif counter in _ADAPTER_FIELDS:
             m = _ADAPTER_RE.match(instance)
             if m:
