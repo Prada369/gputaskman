@@ -275,6 +275,7 @@ class LinuxCounters:
         self._devices: list[tuple[int, object]] = []
         self._last_ts: dict[int, int] = {}
         self.dxg_holders: set[int] = set()
+        self.process_status: dict[int, str] = {}
         self._matcher = PidMatcher()
         # {adapter key: {host pid: ProcGpu}}: NVML processes in another PID namespace that couldn't be
         # matched to a local process. Their PIDs must never be looked up in this /proc.
@@ -308,11 +309,11 @@ class LinuxCounters:
             self._devices = []
 
     @staticmethod
-    def _processes(fn, h) -> list:
+    def _processes(fn, h) -> tuple[list, Exception | None]:
         try:
-            return list(fn(h))
-        except Exception:
-            return []
+            return list(fn(h)), None
+        except Exception as error:
+            return [], error
 
     def _utilization(self, key: int, h) -> dict[int, object]:
         """Latest utilization sample per PID since the previous call."""
@@ -333,6 +334,7 @@ class LinuxCounters:
         adapters: dict[int, AdapterGpu] = defaultdict(AdapterGpu)
         self._compute_pids: set[int] = set()
         self.dxg_holders = set()
+        self.process_status = {}
         for key, h in self._devices:
             try:
                 adapters[key].dedicated = float(N.nvmlDeviceGetMemoryInfo(h).used)
@@ -340,8 +342,15 @@ class LinuxCounters:
                 pass
             if self.wsl:
                 continue  # NVML per-process data is empty or keyed by Windows host PIDs here
-            compute = self._processes(N.nvmlDeviceGetComputeRunningProcesses, h)
-            graphics = self._processes(N.nvmlDeviceGetGraphicsRunningProcesses, h)
+            compute, compute_error = self._processes(N.nvmlDeviceGetComputeRunningProcesses, h)
+            graphics, graphics_error = self._processes(N.nvmlDeviceGetGraphicsRunningProcesses, h)
+            failures = [
+                f"{kind} process list failed ({type(error).__name__}: {error})"
+                for kind, error in (("compute", compute_error), ("graphics", graphics_error))
+                if error is not None
+            ]
+            if failures:
+                self.process_status[key] = "NVML " + "; ".join(failures) + "; attributed total is unknown."
             compute_pids = {p.pid for p in compute}
             self._compute_pids |= compute_pids
             per = procs[key]

@@ -215,11 +215,15 @@ reporting a VRAM vendor, a heuristic validated on one APU) GTT is the GPU's norm
 is only a RAM carve-out, so GTT is still shown but never flagged as spill, and an LLM's memory is its
 VRAM plus GTT. The SDMA engine (`dma`) fills the COPY column. Paged stays blank: there is no commit
 counter. VRAM and Shared are charged to a process only when nothing else can hold its bytes: each of
-its DRM clients has exactly one visible holder, was opened through a render node (`/dev/dri/renderD*`),
-and reports zero bytes in every `drm-shared-*` region. Then its resident VRAM and GTT are its own and add
+its DRM clients has a usable `drm-client-id` and exactly one visible holder, was opened through a
+render node (`/dev/dri/renderD*`), and reports zero bytes in every `drm-shared-*` region.
+Then its resident VRAM and GTT are its own and add
 up without double counting. Otherwise the process shows VRAM and Shared as `n/a` (`null` in JSON, with
 `vram_unattributed_reason`) and its bytes stay in *unattributed*:
 
+- **Missing client identity**: fdinfo has no usable `drm-client-id`. Duplicate descriptors or
+  another holder of the same client can't be ruled out, so GPU% is `n/a` too
+  (`engine_unavailable_reason: "client_id"` in JSON).
 - **Shared client** (fd passing, fork; 1Password and its crash handler on the test desktop): one set of
   counters, and nothing says which process uses it. GPU% is `n/a` too.
 - **Shared buffers** (a window a compositor imports, video frames): `drm-shared-*` counts a buffer by
@@ -343,11 +347,15 @@ process, `vmwp.exe`. When WSL interop is enabled (`/proc/sys/fs/binfmt_misc/WSLI
 `enabled`), gputaskman starts one long-lived `powershell.exe` that reads the Windows GPU counters
 through the same PDH array API as the Windows backend and streams them back once a second:
 
-- **WSL VM (`vmwp.exe`)** is the exact total of Linux GPU memory, across every distro, WSLg, and
-  Docker Desktop.
+- **WSL VM (`vmwp.exe`)** reports the exact total of Linux GPU memory, across every distro, WSLg,
+  and Docker Desktop, when the host provides its Local Usage counter.
 - **Windows apps** appear as `W:<pid>` rows with their VRAM, shared system memory, paged, and engine load.
   Windows and Linux PIDs are separate namespaces, so the prefix keeps them apart.
 - **Linux rows** get a size by matching `vmwp.exe`'s GPU contexts to Linux processes (below).
+
+Each host counter is tracked separately: missing readings are `null` in JSON and `n/a` or blank on
+screen, not measured zeros. Engine load can still be available when memory is unknown. Paged is an
+estimate shown only when Local Usage, Non Local Usage, and Total Committed were all observed.
 
 The first host sample takes about 2.5 s; the TUI shows `starting` until then, and `--once` waits
 for it. The host adapter is paired with the NVML or AMD SMI device by memory usage, because WSL's adapter
@@ -485,11 +493,18 @@ macOS exposes without root:
 
 Other users' processes (WindowServer, system daemons) show GPU% with memory `n/a`: `footprint` needs
 root for them. Idle ones are left out of the table, except WindowServer. Run with `sudo` to measure
-every process's memory. `footprint` takes ~70 ms per process, so it runs in a background thread:
+every process's memory. The attributed total is unknown whenever a Metal client's footprint is
+unmeasured, even if its row is hidden. Device allocation and per-process GPU time remain independent.
+`footprint` takes ~70 ms per process, so it runs in a background thread:
 busy processes and new ones every pass (~2 s), idle ones every 30 s. A new process shows `n/a` for a
 second or two until its first measurement; a single failed measurement keeps the last size, and three
 in a row back off for a minute. Measurements are tied to the process's start time, so a reused PID
 never shows the previous process's numbers.
+
+If the Metal client query fails or times out, per-process GPU readings are unavailable for that
+refresh. JSON reports `attributed: null` with a reason in `counter_status`; a successful empty
+query still reports `attributed: 0`. Device readings are independent and still appear if available.
+The next successful query resumes GPU rates from the last successful sample.
 
 Metal reports one GPU time per process, with no 3D/compute/copy/video split, so those columns show
 `n/a`; a Metal process above 10% GPU is classified `3D/game` unless something more specific applies
@@ -589,7 +604,7 @@ and SM/GFX clock, throttling alerts, charts, processes, and process inspection r
 The header border names the active mode; press `m` again to restore the full details.
 This is a session-only display toggle, applies to every GPU, and does not change collection
 or one-shot text/JSON output.
-All eight history charts are shown by default: GPU, SM clock (GFX clock on AMD), VRAM, memory activity,
+All eight history charts are shown by default: GPU, SM clock (GFX on AMD, GT on Intel), VRAM, memory activity,
 temperature, power, encoder, and decoder. They stack in narrow terminals and share rows as
 the window widens. Click the **Charts** dropdown to focus on one metric or return to **All charts**.
 A blank sample means no reading; zero is drawn at the baseline. Percentages use a 0–100%
@@ -780,8 +795,11 @@ is listed as evidence that the process opened or named it, not as GPU growth. Th
 
 Processes are paired by PID, then by name and listening ports, then by a unique name, because a
 model reload often restarts the server under a new PID. A process missing from one snapshot shows
-`not listed`, not zero: it was not running or used too little GPU to be listed. Processes that
-moved by less than 16 MB are hidden from the text output but included in `--json`.
+`not listed`, not zero: it was not running or used too little GPU to be listed. Small numeric
+changes below 16 MB don't make a process appear in the text output on their own. If a measured or
+inferred process memory counter becomes known or unknown, the text shows both readings and `N/A`
+for the change rather than subtracting from zero. `--json` includes all processes and uses `null`
+when a delta can't be calculated.
 
 A PID is not an identity, because both Windows and Linux reuse them. Each process in `--json` carries
 `started_at` (its creation time in Unix seconds, taken from data the monitor already reads). The same
@@ -867,6 +885,8 @@ do not parse, such as a last line cut short, are skipped and counted.
 Because `record` appends, one file can hold several recordings, and `summary` reports each run on its own.
 A new run starts when the GPU or backend changes, when `taken` goes backwards (a clock change), or when
 two samples are further apart than ten times the file's median interval or 60 seconds, whichever is longer.
+A snapshot that conflicts with a known adapter identity from earlier in the run starts a new run,
+even if the GPUs share a name and some intervening snapshots have no adapter identity.
 A slow sample or two stays inside its run; recording again tomorrow into the same file is a second run.
 
 ### Replaying a recording
@@ -1226,6 +1246,7 @@ file paths, but model and process names still require review.
 | WSL: `unmatched` | No Windows adapter's usage matched the NVML device; multi-GPU WSL is not validated |
 | WSL: Linux rows show `?` | Processes were running before gputaskman started; they become `*` with evidence (see the matching table) |
 | Linux: a GPU process is missing | Processes owned by other users need `sudo`; Docker and other WSL distros are not visible from this one |
+| Linux: NVML process list failed | The attributed total is unknown; check the reported NVML error and retry after restoring process-list access |
 | Linux container: `H:<pid>` rows | GPU processes outside this container's PID namespace (host or other containers); NVML sees them, the container cannot name them |
 | Missing DLLs or model details | Protected processes may deny inspection; basic counters can still work without elevation |
 | No exact LLM breakdown | Enable compatible buffer logging, or use the GGUF estimate; API/log access is optional |

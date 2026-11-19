@@ -244,6 +244,7 @@ class ServerInfo:
     requests_running: int | None = None
     requests_waiting: int | None = None
     kv_cache_usage: float | None = None  # fraction 0-1 of KV-cache pool, not of GPU memory
+    models_complete: bool = True  # internal guard against inferring a singleton from partial API data
 
 
 def _metric(text: str, name: str) -> float | None:
@@ -330,43 +331,104 @@ def _model_entry(name, type_=None, quant=None, ctx=None, size=None, size_vram=No
     return {"name": name, "type": type_, "quant": quant, "ctx": ctx, "size": size, "size_vram": size_vram, "path": path}
 
 
+def _runtime_text(value) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _runtime_int(value) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
 _MODALITY = {"text": "llm", "decisions": "decision", "embeddings": "embedding", "embedding": "embedding"}
 
 
 def llama_server_models(v1: dict, model_path: str | None) -> list[dict]:
     out = []
-    for m in v1.get("data") or []:
-        outs = (m.get("architecture") or {}).get("output_modalities") or []
-        meta = m.get("meta") or {}
-        out.append(_model_entry(os.path.basename(m.get("id") or model_path or "?"),
-                                next((_MODALITY.get(o, o) for o in outs), None),
-                                meta.get("ftype"), meta.get("n_ctx"), meta.get("size"), None, model_path))
+    entries = v1.get("data")
+    for m in entries if isinstance(entries, list) else []:
+        if not isinstance(m, dict):
+            continue
+        architecture = m.get("architecture")
+        outs = architecture.get("output_modalities") if isinstance(architecture, dict) else None
+        outs = [o for o in outs if isinstance(o, str)] if isinstance(outs, list) else []
+        meta = m.get("meta")
+        meta = meta if isinstance(meta, dict) else {}
+        model_id = _runtime_text(m.get("id"))
+        path = _runtime_text(model_path)
+        name = os.path.basename(model_id if model_id else path or "?")
+        out.append(_model_entry(name, next((_MODALITY.get(o, o) for o in outs), None),
+                                _runtime_text(meta.get("ftype")), _runtime_int(meta.get("n_ctx")),
+                                _runtime_int(meta.get("size")), None, path))
     return out
 
 
 def ollama_models(ps: dict) -> list[dict]:
-    return [_model_entry(m.get("name"), "llm", (m.get("details") or {}).get("quantization_level"),
-                         m.get("context_length"), m.get("size"), m.get("size_vram"))
-            for m in ps.get("models") or []]
+    entries = ps.get("models")
+    out = []
+    for m in entries if isinstance(entries, list) else []:
+        if not isinstance(m, dict):
+            continue
+        details = m.get("details")
+        details = details if isinstance(details, dict) else {}
+        out.append(_model_entry(_runtime_text(m.get("name")), "llm",
+                                _runtime_text(details.get("quantization_level")),
+                                _runtime_int(m.get("context_length")), _runtime_int(m.get("size")),
+                                _runtime_int(m.get("size_vram"))))
+    return out
 
 
-def lmstudio_models(v1: dict | None, v0: dict | None) -> list[dict] | None:
+def lmstudio_models(v1: dict | None, v0: dict | None) -> tuple[list[dict], bool] | None:
     """Loaded models from LM Studio's /api/v1/models (preferred) or /api/v0/models."""
     if isinstance(v1, dict) and isinstance(v1.get("models"), list):
         out = []
+        complete = True
         for m in v1["models"]:
-            for inst in m.get("loaded_instances") or []:
-                q = m.get("quantization") or {}
-                t = m.get("type")
-                if t == "decision" and m.get("decision_type"):
-                    t = f"decision ({m['decision_type']})"
-                out.append(_model_entry(inst.get("id") or m.get("key"), t, q.get("name"),
-                                        (inst.get("config") or {}).get("context_length"), m.get("size_bytes")))
-        return out
+            if not isinstance(m, dict):
+                complete = False
+                continue
+            instances = m.get("loaded_instances")
+            if not isinstance(instances, list):
+                complete = False
+                continue
+            for inst in instances:
+                if not isinstance(inst, dict):
+                    complete = False
+                    continue
+                q = m.get("quantization")
+                q = q if isinstance(q, dict) else {}
+                t = _runtime_text(m.get("type"))
+                decision_type = _runtime_text(m.get("decision_type"))
+                if t == "decision" and isinstance(decision_type, str) and decision_type:
+                    t = f"decision ({decision_type})"
+                config = inst.get("config")
+                config = config if isinstance(config, dict) else {}
+                name = _runtime_text(inst.get("id"))
+                if not name or not name.strip():
+                    name = _runtime_text(m.get("key"))
+                if not name or not name.strip():
+                    complete = False
+                    continue
+                out.append(_model_entry(name, t, _runtime_text(q.get("name")),
+                                        _runtime_int(config.get("context_length")), _runtime_int(m.get("size_bytes"))))
+        return out, complete
     if isinstance(v0, dict) and isinstance(v0.get("data"), list):
-        return [_model_entry(m.get("id"), m.get("type"), m.get("quantization"),
-                             m.get("loaded_context_length") or m.get("max_context_length"))
-                for m in v0["data"] if m.get("state") == "loaded"]
+        out = []
+        complete = True
+        for m in v0["data"]:
+            if not isinstance(m, dict) or not isinstance(m.get("state"), str):
+                complete = False
+                continue
+            if m["state"] != "loaded":
+                continue
+            name = _runtime_text(m.get("id"))
+            if not name or not name.strip():
+                complete = False
+                continue
+            ctx = _runtime_int(m.get("loaded_context_length"))
+            if ctx is None:
+                ctx = _runtime_int(m.get("max_context_length"))
+            out.append(_model_entry(name, _runtime_text(m.get("type")), _runtime_text(m.get("quantization")), ctx))
+        return out, complete
     return None
 
 
@@ -419,19 +481,23 @@ def probe_server(port: int, prev: ServerInfo | None = None, key: str | None = No
     if props is UNAUTHORIZED:
         return UNAUTHORIZED
     if isinstance(props, dict) and ("default_generation_settings" in props or "model_path" in props):
-        s = ServerInfo("llama-server", base, model_path=props.get("model_path"))
-        dgs = props.get("default_generation_settings") or {}
-        s.n_ctx = dgs.get("n_ctx") or props.get("n_ctx")
-        s.slots_total = props.get("total_slots")
+        s = ServerInfo("llama-server", base, model_path=_runtime_text(props.get("model_path")))
+        dgs = props.get("default_generation_settings")
+        dgs = dgs if isinstance(dgs, dict) else {}
+        s.n_ctx = _runtime_int(dgs.get("n_ctx"))
+        if s.n_ctx is None:
+            s.n_ctx = _runtime_int(props.get("n_ctx"))
+        s.slots_total = _runtime_int(props.get("total_slots"))
         if prev and prev.kind == "llama-server" and prev.model_path == s.model_path:
             s.models = prev.models  # identity only changes when the model does
         else:
             v1 = _get(base + "/v1/models", key=key)
             s.models = llama_server_models(v1, s.model_path) if isinstance(v1, dict) else []
         slots = _get(base + "/slots", key=key)
-        if isinstance(slots, list):
+        if isinstance(slots, list) and all(
+                isinstance(slot, dict) and isinstance(slot.get("is_processing"), bool) for slot in slots):
             s.slots_total = len(slots)
-            s.slots_busy = sum(1 for x in slots if x.get("is_processing"))
+            s.slots_busy = sum(1 for slot in slots if slot["is_processing"])
             s.requests_running = s.slots_busy
         metrics = _get(base + "/metrics", key=key)
         if isinstance(metrics, str):
@@ -455,7 +521,8 @@ def probe_server(port: int, prev: ServerInfo | None = None, key: str | None = No
     if loaded is None:
         loaded = lmstudio_models(None, _get(base + "/api/v0/models"))
     if loaded is not None:
-        return ServerInfo("lmstudio", base, models=loaded)
+        models, complete = loaded
+        return ServerInfo("lmstudio", base, models=models, models_complete=complete)
     return None
 
 
@@ -587,7 +654,7 @@ def _merge_api(files: list[MappedModel], server: ServerInfo | None, host: Server
         if hit:
             hit.add_source("api")
         elif os.path.isfile(server.model_path):  # loaded without mmap or via the router: API-only evidence
-            files.insert(0, make_model(server.model_path, os.path.getsize(server.model_path), 0,
+            files.insert(0, make_model(server.model_path, os.path.getsize(server.model_path), None,
                                        is_gguf(server.model_path), "api"))
     for front in (s for s in (server, host) if s and s.kind == "ollama"):
         for f in files:
@@ -600,7 +667,8 @@ def _merge_api(files: list[MappedModel], server: ServerInfo | None, host: Server
                     matched.append(om)
     lms = host if host and host.kind == "lmstudio" else (server if server and server.kind == "lmstudio" else None)
     primary = [f for f in files if f.has_model_evidence and f.kind not in _SIDE_KINDS]
-    if lms and len(lms.models) == 1 and len(primary) == 1:  # LM Studio keys don't map to paths; only pair 1:1
+    if lms and lms.models_complete and len(lms.models) == 1 and len(primary) == 1:
+        # LM Studio keys don't map to paths; only pair a complete one-to-one listing.
         primary[0].add_source("api")
         matched.append(lms.models[0])
     return matched
@@ -713,10 +781,12 @@ def build_view(d: ProcDetail, vram: float, shared: float, server: ServerInfo | N
     for front in (s for s in (server, host) if s and s.kind == "ollama"):
         mine = [om for om in front.models if om in matched]
         for om in mine or front.models:  # unmatched: show everything Ollama has loaded
-            if om.get("size"):
-                pct = 100 * (om.get("size_vram") or 0) / om["size"]
+            size = _runtime_int(om.get("size"))
+            if size:
+                size_vram = _runtime_int(om.get("size_vram"))
+                pct = f"{100 * size_vram / size:.0f}%" if size_vram is not None else "n/a"
                 v.notes.append(f"Ollama{'' if mine else ' (not matched to this runner)'}: {om['name']} "
-                               f"{gb(om['size'])} total, {pct:.0f}% on GPU, ctx {om.get('ctx') or '?'}.")
+                               f"{gb(size)} total, {pct} on GPU, ctx {om.get('ctx') or '?'}.")
     if host and host.kind == "lmstudio":
         for m in host.models[:4]:
             v.notes.append(f"LM Studio: {m['name']} {m.get('type') or ''} {m.get('quant') or ''} "
