@@ -3,10 +3,10 @@ from __future__ import annotations
 import os
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from gputaskman import linux
-from gputaskman.collector import ProcRow, Snapshot, select_nv_device
+from gputaskman.collector import Collector, ProcRow, Snapshot, select_nv_device
 from gputaskman.dxgi import Adapter
 from gputaskman.nvml import NvDevice
 from gputaskman.gguf import GgufInfo
@@ -165,6 +165,45 @@ class LinuxCountersTests(unittest.TestCase):
             procs, _ = c.sample()
         self.assertFalse(procs[KEY][100].attributed)
         self.assertFalse(procs[KEY][101].attributed)
+
+    def test_nvml_process_list_failure_makes_total_unknown_and_recovers(self):
+        fake = FakeNvml(graphics=[proc(300, GiB)])
+        fake.nvmlDeviceGetComputeRunningProcesses = Mock(side_effect=RuntimeError("permission denied"))
+        counters = self.counters(fake, wsl=False)
+        collector = Collector.__new__(Collector)
+        collector.adapter, collector.adapters = None, []
+        collector.counters = counters
+        collector.nvml = SimpleNamespace(ok=False)
+        collector.drm_card = collector.ascend_chip = collector.ascend = None
+        collector.gpu_index, collector.scan_budget = 0, None
+        collector.host = None
+        collector.host_status = ""
+        collector._mac_driver = ""
+        collector.inspector = Mock()
+        collector.inspector.get.return_value = ProcDetail(300, "python3")
+        collector.prober = Mock()
+
+        with patch.object(linux, "N", fake), patch("gputaskman.collector.BACKEND", "nvml"):
+            failed = collector.sample()
+            fake.nvmlDeviceGetComputeRunningProcesses = lambda _handle: []
+            fake.graphics = []
+            fake.nvmlDeviceGetProcessUtilization = Mock(side_effect=RuntimeError("NVML_ERROR_NOT_FOUND"))
+            recovered = collector.sample()
+
+        self.assertIsNone(failed.attributed)
+        self.assertIn("compute process list", failed.counter_status)
+        self.assertIn("permission denied", failed.counter_status)
+        self.assertEqual(failed.procs[0].gpu.dedicated, GiB)
+        self.assertEqual(recovered.attributed, 0)
+        self.assertEqual(recovered.counter_status, "")
+
+        fake.nvmlDeviceGetComputeRunningProcesses = Mock(side_effect=RuntimeError("compute unavailable"))
+        fake.nvmlDeviceGetGraphicsRunningProcesses = Mock(side_effect=RuntimeError("graphics unavailable"))
+        with patch.object(linux, "N", fake), patch("gputaskman.collector.BACKEND", "nvml"):
+            both_failed = collector.sample()
+        self.assertIsNone(both_failed.attributed)
+        self.assertIn("compute process list", both_failed.counter_status)
+        self.assertIn("graphics process list", both_failed.counter_status)
 
     def test_utilization_for_unlisted_pids_is_ignored(self):
         fake = FakeNvml(compute=[proc(100, GiB)], samples=[sample(555, 50)])
