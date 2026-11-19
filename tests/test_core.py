@@ -835,6 +835,69 @@ class MemoryTests(unittest.TestCase):
         self.assertTrue(GpuCounters._COUNTERS["dedicated"][0].endswith(r"\Local Usage"))
         self.assertTrue(GpuCounters._COUNTERS["shared"][0].endswith(r"\Non Local Usage"))
 
+    def test_windows_fallback_selection_and_independent_counters(self):
+        names = [f"pid_{pid}_luid_0x0_0x1_phys_0" for pid in (42, 43)]
+        for fallback in (set(), {"dedicated"}, {"shared"}, {"dedicated", "shared"}):
+            with self.subTest(fallback=fallback):
+                def add(query, path, user, handle):
+                    for key in fallback:
+                        if path == GpuCounters._COUNTERS[key][0]:
+                            return 1
+                    return 0
+
+                pdh = SimpleNamespace(PdhOpenQueryW=lambda *args: 0, PdhAddEnglishCounterW=add,
+                                      PdhCollectQueryData=lambda *args: 0)
+                data = {"dedicated": [(n, 512 * MiB) for n in names],
+                        "shared": [(n, 0) for n in names],
+                        "committed": [(n, GiB) for n in names],
+                        "engine": [(names[0] + "_eng_0_engtype_Compute", 42)],
+                        "a_dedicated": [("luid_0x0_0x1_phys_0", 512 * MiB)],
+                        "a_shared": [("luid_0x0_0x1_phys_0", 0)]}
+                with patch("gputaskman.pdh._load_pdh"), patch("gputaskman.pdh._pdh", pdh):
+                    counters = GpuCounters()
+                    self.assertEqual(counters.fallback_counters, fallback)
+                    with patch.object(counters, "_read", side_effect=lambda key: data.get(key, [])):
+                        processes, adapters = counters.sample()
+                self.assertEqual(adapters[1].dedicated, 512 * MiB)
+                self.assertEqual(processes[1][42].gpu_pct, 42)
+                for gpu in processes[1].values():
+                    self.assertEqual(gpu.wddm_dedicated_usage, 512 * MiB if "dedicated" in fallback else None)
+                    self.assertEqual(gpu.wddm_shared_usage, 0 if "shared" in fallback else None)
+                    self.assertEqual("dedicated" in gpu.available, "dedicated" not in fallback)
+                    self.assertEqual("shared" in gpu.available, "shared" not in fallback)
+                    self.assertEqual(gpu.paged_available, not fallback)
+                s = snapshot()
+                s.vram_used = 512 * MiB
+                s.procs = [ProcRow(pid, f"app{pid}", "app", gpu, ProcDetail(pid, f"app{pid}"))
+                           for pid, gpu in processes[1].items()]
+                result = to_dict(s)
+                row = result["processes"][0]
+                self.assertEqual(row["vram_counter_source"], "Dedicated Usage" if "dedicated" in fallback else "Local Usage")
+                self.assertEqual(row["shared_counter_source"], "Shared Usage" if "shared" in fallback else "Non Local Usage")
+                self.assertEqual(row["vram_bytes"], None if "dedicated" in fallback else 512 * MiB)
+                self.assertEqual(row["shared_bytes"], None if "shared" in fallback else 0)
+                self.assertEqual(row["paged_out_bytes"], None if fallback else 512 * MiB)
+                self.assertEqual(result["attributed"], None if "dedicated" in fallback else GiB)
+                if fallback:
+                    self.assertIn("may include surfaces shared across processes", to_text(s))
+                else:
+                    self.assertNotIn("Windows fallback", to_text(s))
+
+    def test_fallback_keeps_attributed_unknown_without_live_rows(self):
+        c = Collector.__new__(Collector)
+        c.adapter = Adapter(1, "GPU", 0x10DE, 16 * GiB, 0, False)
+        c.adapters = [c.adapter]
+        c.gpu_index, c.scan_budget, c.host, c.host_status = 0, None, None, ""
+        c.nvml = Mock(ok=False)
+        c.counters = Mock(outside={}, fallback_counters={"dedicated"})
+        c.counters.sample.return_value = ({1: {}}, {1: AdapterGpu(dedicated=512 * MiB, shared=0)})
+        c.inspector, c.prober = Mock(), Mock()
+        with patch("gputaskman.collector.BACKEND", "wddm"):
+            s = c.sample()
+        self.assertEqual(s.vram_used, 512 * MiB)
+        self.assertIsNone(s.attributed)
+        self.assertIn("may overlap", s.counter_status)
+
     def test_paged_is_clamped_commit_difference(self):
         gpu = ProcGpu(dedicated=100, shared=20, committed=150)
         self.assertEqual(gpu.paged_out, 30)
@@ -2210,6 +2273,26 @@ class UiTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause()
                 self.assertIsNone(s.attributed)
                 self.assertTrue(any((6 * GiB, "grey35") in call.args[0] for call in bar.call_args_list))
+
+    async def test_windows_fallback_is_explained_without_attribution(self):
+        s = snapshot()
+        s.vram_used = 512 * MiB
+        gpu = ProcGpu(available={"committed", "engine"}, committed=GiB,
+                      engines={"3d": 20}, wddm_dedicated_usage=512 * MiB,
+                      wddm_shared_usage=0)
+        s.procs = [ProcRow(10, "dwm.exe", "compositor", gpu, ProcDetail(10, "dwm.exe"))]
+        with patch.object(GpuTaskManager, "poll"), patch("gputaskman.app.stacked_bar", wraps=stacked_bar) as bar:
+            app = GpuTaskManager()
+            app.selected_key = "10"
+            async with app.run_test(size=(180, 42)) as pilot:
+                app.apply(s)
+                await pilot.pause()
+                table = app.query_one("#procs")
+                self.assertEqual(table.get_cell("10", "VRAM").plain, "n/a")
+                self.assertEqual(table.get_cell("10", "GPU%").plain, "20")
+                content = app.query_one("#inspector", Static).content.renderables
+                self.assertIn("Dedicated Usage", " ".join(str(x) for x in content))
+                self.assertTrue(any((512 * MiB, "grey35") in call.args[0] for call in bar.call_args_list))
 
     async def test_eighth_chart_records_sm_clock_with_scale_and_missing_readings(self):
         with patch.object(GpuTaskManager, "poll"):

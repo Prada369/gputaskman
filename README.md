@@ -929,6 +929,15 @@ between processes. The same surface may appear against its application, `csrss.e
 `Non Local Usage`; it falls back to `Dedicated Usage` / `Shared Usage` when the preferred
 counters cannot be added. The adapter total remains the reference. See Microsoft's
 [GPU accounting explanation](https://devblogs.microsoft.com/directx/gpus-in-the-task-manager/).
+Fallback readings are shown separately in the process inspector and one-shot text, named
+`Dedicated Usage` or `Shared Usage`; they can overlap and are not charged bytes. JSON exposes
+them as `wddm_dedicated_usage_bytes` and `wddm_shared_usage_bytes`, with
+`vram_counter_source` and `shared_counter_source` identifying the selected counter for each
+row. The corresponding charged `vram_bytes` or `shared_bytes` is `null`, and attributed VRAM
+is unknown when the dedicated fallback is selected, even if no process row is visible.
+Preferred counters continue to be reported as `Local Usage` and `Non Local Usage`.
+Replay shows recorded fallback readings in the process note.
+Fallback-counter behavior has not been validated on hardware where the preferred counters are unavailable.
 
 In one live sample, DWM's older counter read about 15.3 GiB while `Local Usage` was about
 1.4 GiB. The latter reduced the inflated process sum substantially. This is an observed
@@ -942,7 +951,7 @@ fallback and slower inference, but the counter alone cannot establish why it was
 
 **Paged is an estimate:** `max(Total Committed - Local Usage - Non Local Usage, 0)`.
 It is not an eviction trace, a pagefile measurement, or proof that Windows just moved
-those bytes out of VRAM. The value is also less reliable when fallback counters are in use.
+those bytes out of VRAM. It is unavailable if either process memory counter uses a fallback.
 
 Memory labels currently use `GB` / `MB` for binary units (GiB / MiB). The `Mem activity`
 reading is NVML's memory-activity percentage, **not measured bandwidth in GB/s**.

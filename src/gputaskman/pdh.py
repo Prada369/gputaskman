@@ -104,6 +104,9 @@ class ProcGpu:
     # macOS footprint: swapped bytes in categories charged to graphics. None when footprint did not report
     # the field. Never derived from commit minus resident, and never added to dedicated.
     graphics_swapped: float | None = None
+    # Legacy Windows counters include allocations shared with other processes.
+    wddm_dedicated_usage: float | None = None
+    wddm_shared_usage: float | None = None
 
     @property
     def shown_vram(self) -> float | None:
@@ -149,11 +152,14 @@ class GpuCounters:
         self._query = wintypes.HANDLE()
         self._check(_pdh.PdhOpenQueryW(None, 0, ctypes.byref(self._query)), "PdhOpenQuery")
         self._handles: dict[str, wintypes.HANDLE] = {}
+        self.fallback_counters: set[str] = set()
         for key, paths in self._COUNTERS.items():
-            for path in paths:
+            for index, path in enumerate(paths):
                 h = wintypes.HANDLE()
                 if _pdh.PdhAddEnglishCounterW(self._query, path, 0, ctypes.byref(h)) == 0:
                     self._handles[key] = h
+                    if index:
+                        self.fallback_counters.add(key)
                     break
         _pdh.PdhCollectQueryData(self._query)  # rate counters need a baseline sample
 
@@ -204,8 +210,13 @@ class GpuCounters:
                 m = _PROC_RE.match(name)
                 if m:
                     p = proc(luid_key(m[2], m[3]), int(m[1]))
-                    setattr(p, attr, getattr(p, attr) + val)
-                    p.available.add(attr)
+                    if attr in getattr(self, "fallback_counters", set()):
+                        field_name = f"wddm_{attr}_usage"
+                        current = getattr(p, field_name)
+                        setattr(p, field_name, (current if current is not None else 0.0) + val)
+                    else:
+                        setattr(p, attr, getattr(p, attr) + val)
+                        p.available.add(attr)
         for name, val in self._read("engine"):
             m = _ENGINE_RE.match(name)
             if m:

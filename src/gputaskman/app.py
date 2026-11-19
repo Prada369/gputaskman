@@ -23,7 +23,7 @@ from .llm import gb, redact_cmdline, server_gauge_text
 from .nvml import NvDevice, format_metric
 from .recovery import LiveCollectors
 from .report import (DRM_RESIDENT_NOTE, METAL_NOTE, WDDM_DEVICE_NOTE, WSL_EMPTY, drm_note, has_engine_counters, has_shared_counters, has_wddm_counters,
-                     inferred_note, intel_memory_note, vram_label, vram_total_label, wsl_note)
+                     inferred_note, intel_memory_note, vram_label, vram_total_label, wddm_fallback_note, wsl_note)
 
 KIND_STYLE = {
     "LLM": "bold magenta", "decision": "bold orchid", "decision?": "orchid",
@@ -535,7 +535,7 @@ class GpuTaskManager(App):
         # Fit category proportions to the adapter total; row samples need not sum exactly.
         by_kind: dict[str, float] = {}
         for r in s.procs:
-            if r.gpu.attributed:  # unknown shares stay in "unattributed" instead of showing as 0
+            if r.gpu.attributed and "dedicated" in r.gpu.available:
                 by_kind[r.kind] = by_kind.get(r.kind, 0) + r.gpu.dedicated
         attributed = sum(by_kind.values())
         scale = min(1.0, s.vram_used / attributed) if attributed and s.vram_used is not None else 1.0
@@ -703,6 +703,7 @@ class GpuTaskManager(App):
         rows = s.procs
         if not self.show_all:
             rows = [r for r in rows if not r.gpu.attributed or r.gpu.dedicated >= 32 << 20 or r.gpu.gpu_pct >= 1 or r.gpu.shared >= 64 << 20
+                    or (r.gpu.wddm_dedicated_usage or 0) >= 32 << 20 or (r.gpu.wddm_shared_usage or 0) >= 64 << 20
                     or r.gpu.paged_out >= 128 << 20 or (r.gpu.graphics_swapped or 0) >= 128 << 20 or r.llm]
         rows = sorted(rows, key=self.sorts[self.sort_idx][1])
         vm = next((i for i, r in enumerate(rows) if r.kind == "wsl-vm"), None)
@@ -810,6 +811,8 @@ class GpuTaskManager(App):
             hdr.append("   runtime ", style="grey62")
             hdr.append(" ".join(r.detail.runtimes), style="cyan")
         out.append(hdr)
+        if wddm_fallback_note(r.gpu):
+            out.append(Text(wddm_fallback_note(r.gpu), style="grey62"))
         if not r.host and r.gpu.attributed and r.gpu.inferred_by:
             out.append(Text(inferred_note(r.gpu), style="grey62"))
         if not r.host and not r.gpu.attributed:
