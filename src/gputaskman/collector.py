@@ -420,6 +420,10 @@ class Collector:
             shared_is_spill=not (integrated_gpu or (self.drm_card is not None and self.drm_card.integrated)),
         )
 
+        if BACKEND == "metal" and self.counters.hidden_unmeasured:
+            snap.process_memory_available = False
+            snap.counter_status = "Attributed GPU memory is unknown: some idle Metal clients have unmeasured memory."
+
         snap.host_status = self.host_status
         if BACKEND == "wsl" and (not self.adapter or self.adapter.vendor_id == VENDOR_AMD):
             snap.counter_status = " ".join(dict.fromkeys(filter(None, (amdsmi_status(), self.amdsmi.status))))
@@ -459,9 +463,6 @@ class Collector:
         elif self.backend == "ascend":
             snap.process_memory_available = False
             snap.counter_status = "Ascend chip unavailable: npu-smi could not match the selected adapter"
-        if BACKEND == "metal" and self.counters.hidden_unmeasured:
-            snap.process_memory_available = False
-            snap.counter_status = "Some idle Metal clients are hidden because their memory cannot be measured."
         live = [(pid, g) for pid, g in procs.items() if _is_live(g) or pid in integrated_local_pids]
         live.sort(key=lambda x: -(x[1].shown_vram or 0))
         for pid, g in live:
