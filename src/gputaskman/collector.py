@@ -421,6 +421,12 @@ class Collector:
         )
 
         snap.host_status = self.host_status
+        if self.backend == "nvml":
+            process_status = getattr(self.counters, "process_status", {})
+            process_status = process_status.get(luid, "") if isinstance(process_status, dict) else ""
+            if process_status:
+                snap.process_memory_available = False
+                snap.counter_status = process_status
         if BACKEND == "wsl" and (not self.adapter or self.adapter.vendor_id == VENDOR_AMD):
             snap.counter_status = " ".join(dict.fromkeys(filter(None, (amdsmi_status(), self.amdsmi.status))))
             if self.adapter is None:

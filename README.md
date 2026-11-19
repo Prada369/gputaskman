@@ -1221,6 +1221,7 @@ file paths, but model and process names still require review.
 | WSL: `unmatched` | No Windows adapter's usage matched the NVML device; multi-GPU WSL is not validated |
 | WSL: Linux rows show `?` | Processes were running before gputaskman started; they become `*` with evidence (see the matching table) |
 | Linux: a GPU process is missing | Processes owned by other users need `sudo`; Docker and other WSL distros are not visible from this one |
+| Linux: NVML process list failed | The attributed total is unknown; check the reported NVML error and retry after restoring process-list access |
 | Linux container: `H:<pid>` rows | GPU processes outside this container's PID namespace (host or other containers); NVML sees them, the container cannot name them |
 | Missing DLLs or model details | Protected processes may deny inspection; basic counters can still work without elevation |
 | No exact LLM breakdown | Enable compatible buffer logging, or use the GGUF estimate; API/log access is optional |
