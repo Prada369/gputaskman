@@ -449,6 +449,7 @@ class ContextTracker:
                     self.initial.add(pid)
         for pid in [p for p in self.seen if p not in start]:
             del self.seen[pid]
+            self.starts.pop(pid, None)
             self.initial.discard(pid)  # a reused PID is a new process, not one that was running at startup
             self.gone[pid] = now
         for e in cur:

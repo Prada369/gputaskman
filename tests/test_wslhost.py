@@ -295,6 +295,17 @@ class TrackerTests(unittest.TestCase):
                                {"P": (1.0, "*")})
                 self.check(self.step(t, [0.0, 1.0], [("S", 900), ("P", 2000)]), {})
 
+    def test_exited_process_start_times_are_pruned(self):
+        t = self.make()
+        self.step(t, [0.0], [("S", 900)])
+        for pid in range(30):
+            self.step(t, [1.0, 0.0], [("S", None), (pid, pid + 10)])
+            self.assertEqual(t.starts, {"S": 900, pid: pid + 10})
+            self.step(t, [0.0], [("S", float("nan"))])
+            self.assertEqual(t.starts, {"S": 900})
+        self.step(t, [], [])
+        self.assertEqual(t.starts, {})
+
     def test_already_running_processes_are_guesses_until_evidence(self):
         t = self.make()
         h = [("S", 900), ("C", 14), ("B", 13)]
