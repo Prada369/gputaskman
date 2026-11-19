@@ -57,6 +57,30 @@ class SummaryTests(unittest.TestCase):
         self.assertIn("W:llama", text)
         self.assertRegex(text, r"wsl\s+n/a\s+5\.0%")
 
+    def test_process_vram_peaks_ignore_inferred_and_shared_resident_bytes(self):
+        samples = [
+            snap(0, [
+                {**proc("inferred"), "vram_inferred_bytes": 2 * GiB},
+                {**proc("shared"), "vram_resident_bytes": 3 * GiB},
+                {**proc("measured", GiB), "vram_inferred_bytes": 8 * GiB, "vram_resident_bytes": 7 * GiB},
+                {**proc("same-name", GiB), "vram_inferred_bytes": 6 * GiB},
+                {**proc("same-name"), "vram_resident_bytes": 5 * GiB},
+            ]),
+            snap(1, [
+                {**proc("inferred"), "vram_inferred_bytes": 4 * GiB},
+                {**proc("shared"), "vram_resident_bytes": 5 * GiB},
+                {**proc("same-name", 2 * GiB), "vram_resident_bytes": 9 * GiB},
+            ]),
+        ]
+
+        procs = summarize(samples)["runs"][0]["processes"]
+        by = {(p["host"], p["name"]): p for p in procs}
+        self.assertIsNone(by[(None, "inferred")]["peak_vram_bytes"])
+        self.assertIsNone(by[(None, "shared")]["peak_vram_bytes"])
+        self.assertEqual(by[(None, "measured")]["peak_vram_bytes"], GiB)
+        self.assertEqual(by[(None, "same-name")]["peak_vram_bytes"], 2 * GiB)
+        self.assertEqual(procs[0]["name"], "same-name")
+
     def test_oversized_values_stay_as_recorded_and_do_not_fuse_columns(self):
         text = to_text(summarize([snap(0, [proc("python.exe", 8 * GiB, 18465941443603.8)])]))
         self.assertIn("8.00 GB 18465941443603.8%", text)
