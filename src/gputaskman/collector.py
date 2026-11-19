@@ -18,7 +18,7 @@ from .handy import HandyEvidence, inspect_handy
 from .llm import LlmView, ServerProber, api_key, build_view, gb, ollama_log_path
 from . import nvml as nvml_mod
 from .nvml import Nvml, NvDevice
-from .pdh import ProcGpu
+from .pdh import ENGINE_UNAVAILABLE_REASON, ProcGpu
 from .procinfo import AI_KINDS, ProcDetail, ProcInspector, classify
 from .tcc import TccAdapter, TccCounters, _pci_identity, tcc_adapters
 from .telemetry import DeviceTelemetry
@@ -472,7 +472,7 @@ class Collector:
                                       ProcDetail(pid, "(outside this container)"), host=True, origin="outside"))
         if self.host is not None:  # current inferred sizes drive both scan priority and the LLM breakdown
             self._add_host_rows(snap)
-        if any(row.gpu.engine_reason for row in snap.procs):
+        if any(row.gpu.engine_reason == ENGINE_UNAVAILABLE_REASON for row in snap.procs):
             snap.counter_status = " ".join(filter(None, (
                 snap.counter_status,
                 "Windows GPU engine utilization counters outside 0-1000% are unavailable for affected processes "

@@ -214,11 +214,15 @@ reporting a VRAM vendor, a heuristic validated on one APU) GTT is the GPU's norm
 is only a RAM carve-out, so GTT is still shown but never flagged as spill, and an LLM's memory is its
 VRAM plus GTT. The SDMA engine (`dma`) fills the COPY column. Paged stays blank: there is no commit
 counter. VRAM and Shared are charged to a process only when nothing else can hold its bytes: each of
-its DRM clients has exactly one visible holder, was opened through a render node (`/dev/dri/renderD*`),
-and reports zero bytes in every `drm-shared-*` region. Then its resident VRAM and GTT are its own and add
+its DRM clients has a usable `drm-client-id` and exactly one visible holder, was opened through a
+render node (`/dev/dri/renderD*`), and reports zero bytes in every `drm-shared-*` region.
+Then its resident VRAM and GTT are its own and add
 up without double counting. Otherwise the process shows VRAM and Shared as `n/a` (`null` in JSON, with
 `vram_unattributed_reason`) and its bytes stay in *unattributed*:
 
+- **Missing client identity**: fdinfo has no usable `drm-client-id`. Duplicate descriptors or
+  another holder of the same client can't be ruled out, so GPU% is `n/a` too
+  (`engine_unavailable_reason: "client_id"` in JSON).
 - **Shared client** (fd passing, fork; 1Password and its crash handler on the test desktop): one set of
   counters, and nothing says which process uses it. GPU% is `n/a` too.
 - **Shared buffers** (a window a compositor imports, video frames): `drm-shared-*` counts a buffer by

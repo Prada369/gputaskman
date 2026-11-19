@@ -755,13 +755,20 @@ class DrmEdgeCaseTests(unittest.TestCase):
                 self.assertEqual(g.resident_gtt, 64 * 1024)
 
     def test_inherited_client_without_id_is_not_attributed_to_either_process(self):
+        from gputaskman.collector import ProcRow, Snapshot
+        from gputaskman.procinfo import ProcDetail
+        from gputaskman.report import to_dict, to_text
+
         valid = _fdinfo(7, "PDEV", vram=256 * 1024, gtt=64)
         for text in (
             valid.replace("drm-client-id:\t7\n", ""),
             valid.replace("drm-client-id:\t7", "drm-client-id:\tnot-a-number"),
         ):
             with self.subTest(text=text), tempfile.TemporaryDirectory() as tmp:
-                card, _, counters = self._counters(Path(tmp), [(100, 5, text), (200, 9, text)])
+                card, proc, counters = self._counters(Path(tmp), [(100, 5, text), (200, 9, text)])
+                busy = text.replace("PDEV", card.pdev).replace("drm-engine-gfx:\t0 ns", "drm-engine-gfx:\t250000000 ns")
+                _write_fd(proc, 100, 5, busy)
+                _write_fd(proc, 200, 9, busy)
                 proc_map, adapter_map = counters.sample()
                 rows = proc_map[card.key]
                 self.assertEqual(set(rows), {100, 200})
@@ -772,10 +779,6 @@ class DrmEdgeCaseTests(unittest.TestCase):
                     self.assertEqual(g.dedicated, 0)
                     self.assertNotIn("dedicated", g.available)
                     self.assertEqual(g.resident_vram, 256 * 1024 * 1024)
-
-                from gputaskman.collector import ProcRow, Snapshot
-                from gputaskman.procinfo import ProcDetail
-                from gputaskman.report import to_dict
 
                 adapter = adapter_map[card.key]
                 snapshot = Snapshot(
@@ -790,13 +793,23 @@ class DrmEdgeCaseTests(unittest.TestCase):
                 self.assertIsNone(report["attributed"])
                 self.assertEqual(report["vram_used"], GiB)
                 self.assertEqual([p["vram_bytes"] for p in report["processes"]], [None, None])
+                for row in report["processes"]:
+                    self.assertIsNone(row["gpu_pct"])
+                    self.assertIsNone(row["engines"])
+                    self.assertEqual(row["engine_unavailable_reason"], "client_id")
+                self.assertIn("VRAM and GPU% n/a: this driver's fdinfo has no usable drm-client-id", to_text(snapshot))
 
     def test_duplicate_unidentified_descriptors_are_not_summed(self):
         text = _fdinfo(7, "PDEV", vram=256 * 1024, gtt=64)
         text = text.replace("drm-client-id:\t7\n", "")
         with tempfile.TemporaryDirectory() as tmp:
-            card, _, counters = self._counters(Path(tmp), [(100, 5, text), (100, 6, text)])
+            card, proc, counters = self._counters(Path(tmp), [(100, 5, text), (100, 6, text)])
+            busy = text.replace("PDEV", card.pdev).replace("drm-engine-gfx:\t0 ns", "drm-engine-gfx:\t250000000 ns")
+            _write_fd(proc, 100, 5, busy)
+            _write_fd(proc, 100, 6, busy)
             g = counters.sample()[0][card.key][100]
+            self.assertNotIn("engine", g.available, f"reported GPU%: {g.gpu_pct}")
+            self.assertFalse(g.engines)
             self.assertEqual(g.drm_reason, drm.REASON_CLIENT_ID)
             self.assertFalse(g.attributed)
             self.assertNotIn("dedicated", g.available)
@@ -818,7 +831,8 @@ class DrmEdgeCaseTests(unittest.TestCase):
         # shared is not this process's private memory. Any sharing at all: n/a, never a subtraction.
         for extra in ({"shared_vram": 2}, {"shared_gtt": 4}, {"shared_cpu": 6}):
             with self.subTest(extra), tempfile.TemporaryDirectory() as tmp:
-                card, _, counters = self._counters(Path(tmp), [(100, 5, _fdinfo(7, "PDEV", vram=3, gtt=10, **extra))])
+                card, proc, counters = self._counters(Path(tmp), [(100, 5, _fdinfo(7, "PDEV", vram=3, gtt=10, **extra))])
+                _write_fd(proc, 100, 5, _fdinfo(7, card.pdev, gfx=250_000_000, vram=3, gtt=10, **extra))
                 g = counters.sample()[0][card.key][100]
                 self.assertEqual(g.drm_reason, drm.REASON_SHARED_BUFFERS)
                 self.assertIsNone(g.shown_vram)
@@ -826,6 +840,8 @@ class DrmEdgeCaseTests(unittest.TestCase):
                 self.assertEqual(g.resident_vram, 3 * 1024)
                 self.assertEqual(g.resident_gtt, 10 * 1024)
                 self.assertIn("engine", g.available)  # sharing buffers doesn't share the client's engine time
+                self.assertEqual(g.gpu_pct, 25.0)
+                self.assertFalse(g.engine_reason)
 
     def test_primary_node_is_not_charged(self):
         # logind (root) holds a copy of a compositor's /dev/dri/card* fd that a normal user can't see.

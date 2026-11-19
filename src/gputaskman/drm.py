@@ -1244,9 +1244,11 @@ class DrmCounters:
                 proc.shared = proc.resident_gtt
 
             engines: dict[str, float] = {}
+            if unidentified:
+                proc.engine_reason = REASON_CLIENT_ID
             for client_key, (owners, info, _render, read_at) in held:
                 old = self._prev.get(client_key)
-                if (proc.kfd or not complete or self.partial or len(owners) > 1
+                if (unidentified or proc.kfd or not complete or self.partial or len(owners) > 1
                         or (info["engines"] is None and cycle_rates[client_key] is None)
                         or (info["engines"] is not None and (old is None or read_at - old[1] <= 0))):
                     engines = {}
