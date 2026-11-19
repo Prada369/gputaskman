@@ -900,6 +900,7 @@ _PRUNE_NS = 60 * 1_000_000_000  # forget engine baselines for clients not seen f
 
 # Why a row's DRM memory is n/a instead of measured (ProcGpu.drm_reason)
 REASON_LEGACY = "legacy"  # missing or unparseable shared stats: private and shared bytes can't be told apart
+REASON_CLIENT_ID = "client_id"  # missing or unparseable client ID: duplicate or shared handles can't be ruled out
 REASON_SHARED_CLIENT = "shared_client"  # one DRM client held by several processes (fd passing, fork)
 REASON_SHARED_BUFFERS = "shared_buffers"  # the client holds buffers shared with other clients (dma-buf)
 REASON_PRIMARY = "primary"  # opened via /dev/dri/card*, whose root-held copies (logind) a normal user can't see
@@ -1203,8 +1204,10 @@ class DrmCounters:
                 proc.available.discard("shared")
             # Every buffer this process can reach, shared ones included: a reference, never summed (rule 1).
             complete = pid not in incomplete  # otherwise any sum would be a partial total that looks whole
-            proc.resident_vram = float(sum(vram)) if complete and None not in vram else None
-            proc.resident_gtt = float(sum(gtt)) if complete and None not in gtt else None
+            unidentified = any(i["client_id"] is None for i in infos)
+            ambiguous_residency = unidentified and len(held) > 1
+            proc.resident_vram = float(sum(vram)) if complete and not ambiguous_residency and None not in vram else None
+            proc.resident_gtt = float(sum(gtt)) if complete and not ambiguous_residency and None not in gtt else None
 
             # Bytes are charged to this process only when nothing else can hold them: one visible holder, reached
             # through a render node, no shared buffers at all, and every value known. Anything else leaves the whole
@@ -1214,6 +1217,8 @@ class DrmCounters:
                 reason = REASON_INCOMPLETE
             elif any(len(c[0]) > 1 for _k, c in held):
                 reason = REASON_SHARED_CLIENT
+            elif unidentified:
+                reason = REASON_CLIENT_ID
             elif any(i["shared"] is None for i in infos):
                 reason = REASON_LEGACY
             elif any(i["shared"] for i in infos):

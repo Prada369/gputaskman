@@ -68,6 +68,8 @@ DRM_NOTES = {
     "legacy": ("VRAM n/a: this driver's fdinfo has missing or unparseable drm-shared-* stats (older amdgpu kernels, "
                "Intel integrated GPUs, xe), so resident memory may include buffers imported from other processes "
                "and would be counted once per importer."),
+    "client_id": ("VRAM n/a: this driver's fdinfo has no usable drm-client-id, so duplicate descriptors or another "
+                  "process holding the same DRM client can't be ruled out."),
     "shared_client": ("VRAM and GPU% n/a: this process holds a DRM client other processes hold too (fd passing, "
                       "fork). fdinfo counts the client once and doesn't say which of them uses it."),
     "shared_buffers": ("VRAM n/a: this process's DRM client shares buffers with other clients (dma-buf, e.g. "

@@ -739,6 +739,43 @@ class DrmEdgeCaseTests(unittest.TestCase):
             self.assertNotIn("shared", g.available)
             self.assertEqual(g.resident_vram, 4096 * 1024)  # still shown as a reference
 
+    def test_missing_or_malformed_client_id_blocks_private_attribution(self):
+        valid = _fdinfo(7, "PDEV", vram=256 * 1024, gtt=64)
+        for text in (
+            valid.replace("drm-client-id:\t7\n", ""),
+            valid.replace("drm-client-id:\t7", "drm-client-id:\tnot-a-number"),
+        ):
+            with self.subTest(text=text), tempfile.TemporaryDirectory() as tmp:
+                card, _, counters = self._counters(Path(tmp), [(100, 5, text)])
+                g = counters.sample()[0][card.key][100]
+                self.assertEqual(g.drm_reason, drm.REASON_CLIENT_ID)
+                self.assertFalse(g.attributed)
+                self.assertNotIn("dedicated", g.available)
+                self.assertEqual(g.resident_vram, 256 * 1024 * 1024)
+                self.assertEqual(g.resident_gtt, 64 * 1024)
+
+    def test_duplicate_unidentified_descriptors_are_not_summed(self):
+        text = _fdinfo(7, "PDEV", vram=256 * 1024, gtt=64)
+        text = text.replace("drm-client-id:\t7\n", "")
+        with tempfile.TemporaryDirectory() as tmp:
+            card, _, counters = self._counters(Path(tmp), [(100, 5, text), (100, 6, text)])
+            g = counters.sample()[0][card.key][100]
+            self.assertEqual(g.drm_reason, drm.REASON_CLIENT_ID)
+            self.assertFalse(g.attributed)
+            self.assertNotIn("dedicated", g.available)
+            self.assertIsNone(g.resident_vram)
+            self.assertIsNone(g.resident_gtt)
+
+    def test_duplicate_descriptors_with_valid_client_id_are_counted_once(self):
+        text = _fdinfo(7, "PDEV", vram=256 * 1024, gtt=64)
+        with tempfile.TemporaryDirectory() as tmp:
+            card, _, counters = self._counters(Path(tmp), [(100, 5, text), (100, 6, text)])
+            g = counters.sample()[0][card.key][100]
+            self.assertEqual(g.drm_reason, "")
+            self.assertTrue(g.attributed)
+            self.assertEqual(g.dedicated, 256 * 1024 * 1024)
+            self.assertEqual(g.resident_gtt, 64 * 1024)
+
     def test_any_shared_buffer_leaves_the_process_unattributed(self):
         # drm-shared-* counts by preferred placement and drm-resident-* by current placement, so resident minus
         # shared is not this process's private memory. Any sharing at all: n/a, never a subtraction.
@@ -1105,22 +1142,26 @@ class DrmReportTests(unittest.TestCase):
                           resident_vram=float(GiB), resident_gtt=0.0)
         compositor = ProcGpu(attributed=False, available={"engine"}, resident_vram=float(2 * GiB),
                              resident_gtt=None, drm_reason=drm.REASON_SHARED_BUFFERS)
+        unidentified = ProcGpu(attributed=False, available={"engine"}, drm_reason=drm.REASON_CLIENT_ID)
         rows = [ProcRow(100, "llama-server", "LLM", private, ProcDetail(100, "llama-server")),
-                ProcRow(200, "kwin_wayland", "compositor", compositor, ProcDetail(200, "kwin_wayland"))]
+                ProcRow(200, "kwin_wayland", "compositor", compositor, ProcDetail(200, "kwin_wayland")),
+                ProcRow(300, "renderer", "renderer", unidentified, ProcDetail(300, "renderer"))]
         snap = Snapshot(taken=1, adapter=None, adapters=[], nv=None, driver="", cuda="", vram_total=16 * GiB,
                         vram_used=4 * GiB, shared_used=0, backend="drm", procs=rows, shared_is_spill=True)
         data = to_dict(snap)
         self.assertTrue(data["shared_is_spill"])
-        llama, kwin = data["processes"]
+        llama, kwin, renderer = data["processes"]
         self.assertEqual((llama["vram_bytes"], llama["shared_bytes"], llama["vram_resident_bytes"]), (GiB, 0, GiB))
         self.assertIsNone(llama["vram_unattributed_reason"])
         self.assertEqual((kwin["vram_bytes"], kwin["shared_bytes"]), (None, None))
         self.assertEqual((kwin["vram_resident_bytes"], kwin["gtt_resident_bytes"]), (2 * GiB, None))
         self.assertEqual(kwin["vram_unattributed_reason"], "shared_buffers")
+        self.assertEqual(renderer["vram_unattributed_reason"], "client_id")
         text = to_text(snap)
         line = next(x for x in text.splitlines() if x.lstrip().startswith("200"))
         self.assertEqual(line.split()[3:5], ["n/a", "N/A"])  # VRAM and SPILL unknown, not blank or 0
         self.assertIn(DRM_NOTES["shared_buffers"], text)
+        self.assertIn(DRM_NOTES["client_id"], text)
         self.assertNotIn(DRM_NOTES["legacy"], text)
 
 
