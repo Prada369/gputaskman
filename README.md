@@ -189,6 +189,8 @@ Guessed local rows carry `vram_attributed: false`, `vram_bytes: null` and the ca
 `vram_inferred_bytes` with `vram_inferred_by: "order"`. They are display hints, not measured process
 peaks in `summary` or a budget for a model breakdown. Local GPU% and engines are `null` with an
 `engine_unavailable_reason`: the host's engine readings do not establish which local process did the work.
+Independently evidenced model files still supply metadata and model/flag-based estimates, with an
+explicitly unknown process VRAM total; neither those estimates nor the mapped file prove GPU ownership.
 Every NVML host PID is retained as `H:<pid>` / `(unresolved host PID)` (`host: "nvml"` in JSON), never
 looked up locally. Those rows preserve measured memory and engine counters under the driver's actual
 PID. Only their measured bytes enter the attributed total, once, not again through a local guess.

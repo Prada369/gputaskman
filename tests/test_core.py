@@ -2401,7 +2401,7 @@ class LlmWantedTests(unittest.TestCase):
             kind=kind,
             detail=ProcDetail(123, cmdline=["--diffusion-model"] if diffusion else [],
                               models=[MappedModel(m, 1, 0, True) for m in models]),
-            gpu=SimpleNamespace(available=set(available)),
+            gpu=ProcGpu(available=set(available)),
         )
 
     def test_spill_backend_needs_both_counters(self):
@@ -2675,11 +2675,16 @@ class UiTests(unittest.IsolatedAsyncioTestCase):
         s.backend = "nvml"
         local = ProcGpu(attributed=False, inferred=3 * GiB, inferred_by="order", available=set(),
                         engine_reason="NVML engines are measured for a host PID; its local owner is unresolved.")
-        s.procs = [ProcRow(10, "python3", "AI", local, ProcDetail(10, "python3")),
+        detail = ProcDetail(10, "python3", models=[MappedModel("m.gguf", GiB, None, True)])
+        with patch("gputaskman.llm.read_gguf",
+                   return_value=GgufInfo("m.gguf", GiB, 3, tensor_bytes=GiB)):
+            view = build_view(detail, 0, 0, None, attributed=False)
+        s.procs = [ProcRow(10, "python3", "AI", local, detail, view),
                    ProcRow(9000, "(unresolved host PID)", "external",
                            ProcGpu(dedicated=3 * GiB, engines={"compute": 75}),
                            ProcDetail(9000, "(unresolved host PID)"), host=True, origin="nvml")]
-        with patch.object(GpuTaskManager, "poll"), patch("gputaskman.app.BACKEND", "nvml"):
+        with patch.object(GpuTaskManager, "poll"), patch("gputaskman.app.BACKEND", "nvml"), \
+                patch("gputaskman.app.stacked_bar", wraps=stacked_bar) as bar:
             app = GpuTaskManager()
             app.selected_key = "10"
             async with app.run_test(size=(220, 50)) as pilot:
@@ -2693,6 +2698,8 @@ class UiTests(unittest.IsolatedAsyncioTestCase):
                 text = "\n".join(getattr(line, "plain", "") for line in
                                  app.query_one("#inspector", Static).content.renderables)
                 self.assertIn("local owner is unresolved", text)
+                self.assertIn("VRAM total is unknown", text)
+                self.assertEqual(bar.call_args.args[1], GiB)  # estimates, not the guessed 3 GiB budget
                 self.assertEqual(s.attributed, 3 * GiB)
 
     async def test_unknown_process_memory_preserves_unattributed_adapter_usage(self):

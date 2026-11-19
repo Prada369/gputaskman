@@ -227,13 +227,16 @@ def _llm_wanted(row, shared_is_spill: bool) -> bool:
     not diffusion, and with measured GPU memory. Where spilled system memory is a counter of its own
     (WDDM, discrete DRM cards) both the dedicated and shared counters must be present; on an integrated
     GPU system memory is the memory and there is no spill counter, so dedicated alone suffices.
-    Foundry Local can report loaded IDs even when memory counters and model files are unavailable."""
+    Independent model evidence on an inferred-owner row can still supply metadata and estimates,
+    without a measured memory budget. Foundry Local can report loaded IDs without counters or files."""
     if row.detail.is_diffusion:
         return False
     if row.detail.foundry_local:
         return True  # Loaded-model identity does not require memory counters or a mapped file.
     if row.kind not in AI_KINDS or not (row.detail.has_model_evidence or row.kind == "LLM"):
         return False
+    if not row.gpu.attributed and row.gpu.inferred_by and row.detail.has_model_evidence:
+        return True
     need = {"dedicated", "shared"} if shared_is_spill else {"dedicated"}
     return need <= row.gpu.available
 
@@ -565,11 +568,12 @@ class Collector:
             host = self.prober.get(parent_ports, kind=kind, origin=parent_origin)
             log = ollama_log_path() if row in ollama_runners and len(ollama_runners) == 1 else None
             # On an APU, GTT is the GPU's ordinary memory (often most of it), not spill: count it as held memory.
-            held = (row.gpu.shown_vram or 0) + (0 if snap.shared_is_spill else (row.gpu.shared or 0))
+            unproven_owner = snap.backend == "nvml" and bool(row.gpu.inferred_by)
+            held = 0 if unproven_owner else (
+                (row.gpu.shown_vram or 0) + (0 if snap.shared_is_spill else (row.gpu.shared or 0)))
             row.llm = build_view(row.detail, held, row.gpu.shared if snap.shared_is_spill else 0,
                                  own or host, log, host=host if own else None,
-                                 attributed=(row.gpu.shown_vram is not None
-                                             and not (snap.backend == "nvml" and row.gpu.inferred_by)),
+                                 attributed=row.gpu.shown_vram is not None and not unproven_owner,
                                  server_source="process" if own else "parent" if host else None)
             locked = None if own else self.prober.locked_port(ports, key, kind=kind, origin=own_origin)
             if locked:

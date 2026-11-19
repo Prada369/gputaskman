@@ -364,6 +364,7 @@ class ContainerTests(unittest.TestCase):
         text = to_text(snap)
         self.assertIn("3.00 GB?", text)
         self.assertIn("local owner is unresolved", text)
+        self.assertNotIn("Windows GPU engine utilization counters", text)
         self.assertNotIn("outside this container", text)
         peaks = {p["host"]: p for p in summarize([data])["runs"][0]["processes"]}
         self.assertIsNone(peaks[None]["peak_vram_bytes"])
@@ -371,11 +372,49 @@ class ContainerTests(unittest.TestCase):
         self.assertEqual(peaks["nvml"]["peak_vram_bytes"], 3 * GiB)
 
     def test_unproven_bytes_do_not_constrain_model_breakdown(self):
-        d = ProcDetail(547, "llama-server", models=[MappedModel("/m/x.gguf", GiB, 0, True)])
-        with patch("gputaskman.collector.build_view") as build:
-            snap = self.snapshot(FakeNvml(compute=[proc(9000, 3 * GiB)]), detail=d)
-        self.assertIsNone(snap.procs[0].llm)
-        build.assert_not_called()  # a guessed counter is not a model residency budget
+        d = ProcDetail(547, "llama-server", cmdline=["llama-server", "-c", "4096"],
+                       models=[MappedModel("/m/x.gguf", 8 * GiB, None, True)])
+        model = GgufInfo(path="/m/x.gguf", file_size=8 * GiB, version=3, tensor_bytes=8 * GiB,
+                         metadata={"general.architecture": "llama", "llama.block_count": 32,
+                                   "llama.context_length": 4096, "llama.attention.head_count": 32,
+                                   "llama.embedding_length": 4096})
+        for memory in (3 * GiB, 12 * GiB, None):
+            with self.subTest(memory=memory), \
+                    patch("gputaskman.llm.read_gguf", return_value=model), \
+                    patch("gputaskman.collector.build_view", wraps=build_view) as build:
+                snap = self.snapshot(FakeNvml(compute=[proc(9000, memory)],
+                                             samples=[sample(9000, 75)]), detail=d)
+                view = snap.procs[0].llm
+                self.assertIsNotNone(view)
+                build.assert_called_once()
+                self.assertEqual(build.call_args.args[1:3], (0, 0))
+                self.assertFalse(build.call_args.kwargs["attributed"])
+                self.assertEqual(view.models, [model])
+                self.assertEqual(view.files[0].sources, ["mapped"])
+                self.assertEqual([(s.kind, s.bytes) for s in view.segments],
+                                 [("weights", 8 * GiB), ("kv", 2 * GiB)])
+                self.assertTrue(all(not s.exact for s in view.segments))
+                self.assertTrue(any("VRAM total is unknown" in n for n in view.notes))
+                self.assertIn("evidence: in use (mapped)", to_text(snap))
+                local, host = to_dict(snap)["processes"]
+                self.assertFalse(local["vram_attributed"])
+                self.assertIsNone(local["vram_bytes"])
+                self.assertIsNone(local["engines"])
+                self.assertEqual(local["vram_inferred_bytes"], memory)
+                self.assertEqual(host["vram_bytes"], memory)
+                self.assertEqual(snap.procs[0].gpu.available, set())
+                self.assertEqual(snap.attributed, memory)
+
+    def test_unproven_owner_without_model_evidence_does_not_get_a_breakdown(self):
+        for sources in ([], ["path-arg"], ["installed"]):
+            with self.subTest(sources=sources), patch("gputaskman.collector.build_view") as build:
+                d = ProcDetail(547, "llama-server",
+                               models=[MappedModel("/m/x.gguf", GiB, None, True, sources=sources)])
+                snap = self.snapshot(FakeNvml(compute=[proc(9000, 3 * GiB)]), detail=d)
+                self.assertIsNone(snap.procs[0].llm)
+                build.assert_not_called()
+
+    def test_api_daemon_does_not_use_guessed_memory_as_a_budget(self):
         # An independently detected API daemon may still report loaded IDs, without a guessed budget.
         for memory in (3 * GiB, None):
             with self.subTest(memory=memory), \
@@ -384,6 +423,7 @@ class ContainerTests(unittest.TestCase):
                                      detail=ProcDetail(547, "foundrylocald"))
                 self.assertIsNotNone(snap.procs[0].llm)
                 build.assert_called_once()
+                self.assertEqual(build.call_args.args[1:3], (0, 0))
                 self.assertFalse(build.call_args.kwargs["attributed"])
 
     def test_host_memory_availability_is_independent_of_host_engines(self):

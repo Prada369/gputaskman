@@ -13,7 +13,7 @@ from gputaskman import wslhost
 from gputaskman.collector import Collector, ProcRow, Snapshot
 from gputaskman.dxgi import Adapter, VENDOR_AMD
 from gputaskman.llm import LlmView
-from gputaskman.pdh import AdapterGpu, ProcGpu
+from gputaskman.pdh import ENGINE_UNAVAILABLE_REASON, AdapterGpu, ProcGpu
 from gputaskman.procinfo import MappedModel, ProcDetail
 from gputaskman.report import to_dict, to_text
 from gputaskman.wslhost import ContextTracker, HostSample, HostStream, match_adapter, parse_line
@@ -491,6 +491,32 @@ class HostRowTests(unittest.TestCase):
         text_rows = {row.split()[0]: row.split() for row in to_text(snap).splitlines()
                      if row.lstrip().startswith("W:")}
         self.assertEqual(text_rows["W:42"][-4:], ["n/a", "N/A", "N/A", "15"])
+
+    def test_sample_reports_invalid_windows_host_engines_in_wsl(self):
+        sample = parse_line(line([
+            ["dedicated usage", LUID, GiB],
+            ["local usage", f"pid_42_{LUID}", GiB],
+            ["utilization percentage", f"pid_42_{LUID}_eng_0_engtype_3D", 1100],
+        ], {"42": "dwm"}), now=time.time())
+        c = self.collector(FakeStream(sample))
+        c.adapter = Adapter(RTX, "NVIDIA", 0x10DE, 24 * GiB, 0, False)
+        c.adapters, c.gpu_index, c.scan_budget = [c.adapter], 0, None
+        c.host_status = ""
+        c.nvml = Mock(ok=False)
+        c.counters = Mock(host_procs={})
+        c.counters.sample.return_value = ({RTX: {}}, {RTX: AdapterGpu(dedicated=GiB)})
+        c.inspector = Mock()
+        with patch.object(collector_mod, "BACKEND", "wsl"):
+            snap = c.sample()
+        row, = snap.procs
+        self.assertEqual((row.pid, row.origin, row.gpu.engine_reason), (42, "windows", ENGINE_UNAVAILABLE_REASON))
+        self.assertIn("Windows GPU engine utilization counters outside 0-1000%", snap.counter_status)
+        self.assertIn(snap.counter_status, to_text(snap))
+        data = to_dict(snap)
+        self.assertEqual(data["counter_status"], snap.counter_status)
+        self.assertIsNone(data["processes"][0]["engines"])
+        self.assertEqual(data["processes"][0]["vram_bytes"], GiB)
+        c.inspector.get.assert_not_called()
 
     def test_linux_process_gets_matched_vram(self):
         # contexts newest first: this monitor's own 0-byte NVML context, then the workload (3 GB)

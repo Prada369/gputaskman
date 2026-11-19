@@ -872,7 +872,8 @@ class GpuTaskManager(App):
                 out.append(Text("Model files, launch flags and runtime buffer logs can span GPUs. "
                                 "The breakdown below is not a measured per-device model placement.", style="grey70"))
             width = max(min(self.size.width - 8, 100), 20)
-            total = max(r.gpu.shown_vram or 0, sum(x.bytes for x in v.segments), 1)
+            budget = 0 if s.backend == "nvml" and r.gpu.inferred_by else (r.gpu.shown_vram or 0)
+            total = max(budget, sum(x.bytes for x in v.segments), 1)
             out.append(stacked_bar([(x.bytes, SEG_STYLE[x.kind]) for x in v.segments], total, width))
             legend = Text()
             for x in v.segments:
